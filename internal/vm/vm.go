@@ -309,12 +309,6 @@ func (m *vm) executeFrame(function *bytecode.Function, frame *frame) ([]runtime.
 				return nil, fmt.Errorf("vm: local slot out of range in %q", function.Name)
 			}
 			frame.locals[dst].Value = runtime.IntValue(frame.locals[dst].Value.Int() - frame.locals[src].Value.Int())
-		case bytecode.OpLocalAddTwoLocals:
-			dst, left, right := inst.A, inst.B, int(inst.I64)
-			if uint(dst) >= uint(len(frame.locals)) || uint(left) >= uint(len(frame.locals)) || uint(right) >= uint(len(frame.locals)) {
-				return nil, fmt.Errorf("vm: local slot out of range in %q", function.Name)
-			}
-			frame.locals[dst].Value = runtime.IntValue(frame.locals[dst].Value.I64 + frame.locals[left].Value.I64 + frame.locals[right].Value.I64)
 		case bytecode.OpStructFieldAddIntConst:
 			baseSlot, fieldIndex := inst.A, inst.B
 			if baseSlot < 0 || baseSlot >= len(frame.locals) {
@@ -383,14 +377,13 @@ func (m *vm) executeFrame(function *bytecode.Function, frame *frame) ([]runtime.
 			if baseSlot < 0 || baseSlot >= len(frame.locals) || indexSlot < 0 || indexSlot >= len(frame.locals) || sourceSlot < 0 || sourceSlot >= len(frame.locals) {
 				return nil, fmt.Errorf("vm: local slot out of range in %q", function.Name)
 			}
-			fieldIndex := int(inst.C)
-			array, ok := frame.locals[baseSlot].Value.Obj.(*runtime.Array)
-			if !ok || array == nil {
-				return nil, fmt.Errorf("vm: expected array in %q", function.Name)
+			fieldIndex, err := strconv.Atoi(inst.S)
+			if err != nil {
+				return nil, fmt.Errorf("vm: invalid struct field index %q in %q", inst.S, function.Name)
 			}
-			index := frame.locals[indexSlot].Value.I64
-			if uint64(index) >= uint64(len(array.Elements)) {
-				return nil, fmt.Errorf("vm: index %d out of range in %q", index, function.Name)
+			cell, err := indexedCell(frame.locals[baseSlot].Value, frame.locals[indexSlot].Value.Int())
+			if err != nil {
+				return nil, fmt.Errorf("vm: %w in %q", err, function.Name)
 			}
 			strct, ok := frame.locals[sourceSlot].Value.Object().(*runtime.Struct)
 			if frame.locals[sourceSlot].Value.Kind != runtime.ObjectKind || !ok || strct == nil {
@@ -399,7 +392,6 @@ func (m *vm) executeFrame(function *bytecode.Function, frame *frame) ([]runtime.
 			if fieldIndex < 0 || fieldIndex >= len(strct.Fields) {
 				return nil, fmt.Errorf("vm: field index %d out of range in %q", fieldIndex, function.Name)
 			}
-			cell := &array.Elements[index]
 			cell.Value = runtime.IntValue(cell.Value.Int() + strct.Fields[fieldIndex].Value.Int())
 		case bytecode.OpLoadStructFieldLocal:
 			baseSlot, fieldIndex := inst.A, inst.B
@@ -414,28 +406,16 @@ func (m *vm) executeFrame(function *bytecode.Function, frame *frame) ([]runtime.
 				return nil, fmt.Errorf("vm: field index %d out of range in %q", fieldIndex, function.Name)
 			}
 			frame.push(strct.Fields[fieldIndex].Value)
-		case bytecode.OpLoadArrayElemLocalConst, bytecode.OpAddArrayElemLocalConst:
+		case bytecode.OpLoadArrayElemLocalConst:
 			baseSlot := inst.A
 			if baseSlot < 0 || baseSlot >= len(frame.locals) {
 				return nil, fmt.Errorf("vm: local slot %d out of range in %q", baseSlot, function.Name)
 			}
-			array, ok := frame.locals[baseSlot].Value.Obj.(*runtime.Array)
-			if !ok || array == nil {
-				return nil, fmt.Errorf("vm: expected array in %q", function.Name)
+			cell, err := indexedCell(frame.locals[baseSlot].Value, inst.I64)
+			if err != nil {
+				return nil, fmt.Errorf("vm: %w in %q", err, function.Name)
 			}
-			if uint64(inst.I64) >= uint64(len(array.Elements)) {
-				return nil, fmt.Errorf("vm: index %d out of range in %q", inst.I64, function.Name)
-			}
-			value := &array.Elements[inst.I64].Value
-			if inst.Op == bytecode.OpLoadArrayElemLocalConst {
-				frame.push(*value)
-			} else {
-				n := len(frame.stack)
-				if n == 0 {
-					return nil, fmt.Errorf("vm: stack underflow in %q", function.Name)
-				}
-				frame.stack[n-1] = runtime.IntValue(frame.stack[n-1].I64 + value.I64)
-			}
+			frame.push(cell.Value)
 		case bytecode.OpLocalAddStructField:
 			targetSlot, baseSlot := inst.A, inst.B
 			fieldIndex := int(inst.I64)
@@ -469,24 +449,9 @@ func (m *vm) executeFrame(function *bytecode.Function, frame *frame) ([]runtime.
 			}
 			m.globals[inst.A].Value = runtime.CloneForStore(value)
 		case bytecode.OpAdd:
-			n := len(frame.stack)
-			if n < 2 {
-				return nil, fmt.Errorf("vm: stack underflow in %q", function.Name)
+			if err := m.execAdd(frame); err != nil {
+				return nil, err
 			}
-			lv, rv := &frame.stack[n-2], &frame.stack[n-1]
-			switch {
-			case lv.Kind == runtime.Int && rv.Kind == runtime.Int:
-				lv.I64 += rv.I64
-			case lv.Kind == runtime.String && rv.Kind == runtime.String:
-				*lv = runtime.StringValue(lv.String() + rv.String())
-			case lv.Kind == runtime.Float64 || rv.Kind == runtime.Float64:
-				*lv = runtime.Float64Value(asFloat(*lv) + asFloat(*rv))
-			case lv.Kind == runtime.Int64 || rv.Kind == runtime.Int64:
-				*lv = runtime.Int64Value(lv.Int() + rv.Int())
-			default:
-				*lv = runtime.IntValue(lv.Int() + rv.Int())
-			}
-			frame.stack = frame.stack[:n-1]
 		case bytecode.OpSub:
 			if err := m.execSub(frame); err != nil {
 				return nil, err
@@ -638,13 +603,9 @@ func (m *vm) executeFrame(function *bytecode.Function, frame *frame) ([]runtime.
 			if slot < 0 || slot >= len(frame.locals) {
 				return nil, fmt.Errorf("vm: local slot %d out of range in %q", slot, function.Name)
 			}
-			expected := int64(inst.C)
-			if inst.S != "" {
-				var err error
-				expected, err = strconv.ParseInt(inst.S, 10, 64)
-				if err != nil {
-					return nil, fmt.Errorf("vm: invalid fused jump constant %q in %q", inst.S, function.Name)
-				}
+			expected, err := strconv.ParseInt(inst.S, 10, 64)
+			if err != nil {
+				return nil, fmt.Errorf("vm: invalid fused jump constant %q in %q", inst.S, function.Name)
 			}
 			if (frame.locals[slot].Value.Int() & inst.I64) != expected {
 				if inst.A < 0 || inst.A > len(function.Code) {
@@ -1101,44 +1062,6 @@ func (m *vm) executeFrame(function *bytecode.Function, frame *frame) ([]runtime.
 			}
 			mm.Entries[encoded] = runtime.MapEntry{Key: runtime.CloneForStore(key), Value: runtime.CloneForStore(value)}
 			mm.KeysDirty = true
-		case bytecode.OpMapGetLocalStringInt:
-			if inst.A < 0 || inst.A >= len(frame.locals) {
-				return nil, fmt.Errorf("vm: local slot %d out of range in %q", inst.A, function.Name)
-			}
-			target := &frame.locals[inst.A].Value
-			if target.Kind == runtime.Nil || (target.Kind == runtime.ObjectKind && target.Obj == nil) {
-				frame.push(runtime.IntValue(0))
-				continue
-			}
-			mm, ok := target.Obj.(*runtime.Map)
-			if target.Kind != runtime.ObjectKind || !ok || mm == nil {
-				return nil, fmt.Errorf("vm: expected map for index in %q", function.Name)
-			}
-			key := runtime.MapKey{Kind: runtime.String, Str: inst.S}
-			frame.push(runtime.IntValue(mm.Entries[key].Value.I64))
-		case bytecode.OpMapAddLocalStringInt:
-			n := len(frame.stack)
-			if n == 0 {
-				return nil, fmt.Errorf("vm: stack underflow in %q", function.Name)
-			}
-			if inst.A < 0 || inst.A >= len(frame.locals) {
-				return nil, fmt.Errorf("vm: local slot %d out of range in %q", inst.A, function.Name)
-			}
-			target := &frame.locals[inst.A].Value
-			mm, ok := target.Obj.(*runtime.Map)
-			if target.Kind != runtime.ObjectKind || !ok || mm == nil {
-				return nil, fmt.Errorf("vm: expected map for assignment in %q", function.Name)
-			}
-			key := runtime.MapKey{Kind: runtime.String, Str: inst.S}
-			entry, exists := mm.Entries[key]
-			if !exists {
-				entry.Key = runtime.StringValue(inst.S)
-				entry.Value = mm.Zero
-				mm.KeysDirty = true
-			}
-			entry.Value = runtime.IntValue(entry.Value.I64 + frame.stack[n-1].I64)
-			mm.Entries[key] = entry
-			frame.stack = frame.stack[:n-1]
 		case bytecode.OpMapGet:
 			key, err := frame.pop()
 			if err != nil {
@@ -1208,20 +1131,15 @@ func (m *vm) executeFrame(function *bytecode.Function, frame *frame) ([]runtime.
 				return nil, fmt.Errorf("vm: %w in %q", err, function.Name)
 			}
 		case bytecode.OpBuiltinLen:
-			n := len(frame.stack)
-			if n == 0 {
-				return nil, fmt.Errorf("vm: stack underflow in %q", function.Name)
+			value, err := frame.pop()
+			if err != nil {
+				return nil, err
 			}
-			value := &frame.stack[n-1]
-			if value.Kind == runtime.String {
-				*value = runtime.IntValue(int64(len(value.Str)))
-				continue
-			}
-			length, err := builtinLen(*value)
+			n, err := builtinLen(value)
 			if err != nil {
 				return nil, fmt.Errorf("vm: %w in %q", err, function.Name)
 			}
-			*value = runtime.IntValue(int64(length))
+			frame.push(runtime.IntValue(int64(n)))
 		case bytecode.OpRangeInitIndexed:
 			value, err := frame.pop()
 			if err != nil {
@@ -1244,50 +1162,49 @@ func (m *vm) executeFrame(function *bytecode.Function, frame *frame) ([]runtime.
 				return nil, fmt.Errorf("vm: range local slot out of range in %q", function.Name)
 			}
 			index := frame.locals[indexSlot].Value.Int() + 1
-			source := &frame.locals[sourceSlot].Value
+			source := frame.locals[sourceSlot].Value
 			switch source.Kind {
 			case runtime.Nil:
+				frame.push(runtime.BoolValue(false))
 			case runtime.Int, runtime.Int64:
 				if index >= source.Int() {
-					break
+					frame.push(runtime.BoolValue(false))
+					continue
 				}
-				frame.locals[indexSlot].Value.I64 = index
+				frame.locals[indexSlot].Value = runtime.IntValue(index)
 				if source.Kind == runtime.Int64 {
 					frame.locals[keySlot].Value = runtime.Int64Value(index)
 				} else {
 					frame.locals[keySlot].Value = runtime.IntValue(index)
 				}
 				frame.locals[valueSlot].Value = runtime.NilValue()
-				continue
+				frame.push(runtime.BoolValue(true))
 			case runtime.ObjectKind:
-				var elements []runtime.Cell
-				switch obj := source.Obj.(type) {
+				switch obj := source.Object().(type) {
 				case *runtime.Array:
-					if obj != nil {
-						elements = obj.Elements
+					if obj == nil || index >= int64(len(obj.Elements)) {
+						frame.push(runtime.BoolValue(false))
+						continue
 					}
+					frame.locals[indexSlot].Value = runtime.IntValue(index)
+					frame.locals[keySlot].Value = runtime.IntValue(index)
+					frame.locals[valueSlot].Value = runtime.CloneForStore(obj.Elements[index].Value)
+					frame.push(runtime.BoolValue(true))
 				case *runtime.Slice:
-					if obj != nil {
-						elements = obj.Elements
+					if obj == nil || index >= int64(len(obj.Elements)) {
+						frame.push(runtime.BoolValue(false))
+						continue
 					}
+					frame.locals[indexSlot].Value = runtime.IntValue(index)
+					frame.locals[keySlot].Value = runtime.IntValue(index)
+					frame.locals[valueSlot].Value = runtime.CloneForStore(obj.Elements[index].Value)
+					frame.push(runtime.BoolValue(true))
 				default:
 					return nil, fmt.Errorf("vm: expected indexed range source in %q", function.Name)
 				}
-				if index >= int64(len(elements)) {
-					break
-				}
-				frame.locals[indexSlot].Value.I64 = index
-				frame.locals[keySlot].Value = runtime.IntValue(index)
-				value := elements[index].Value
-				if value.Kind == runtime.ObjectKind {
-					value = runtime.CloneForStore(value)
-				}
-				frame.locals[valueSlot].Value = value
-				continue
 			default:
 				return nil, fmt.Errorf("vm: expected indexed range source in %q", function.Name)
 			}
-			frame.ip = int(inst.C)
 		case bytecode.OpRangeInitMap:
 			value, err := frame.pop()
 			if err != nil {
@@ -1327,12 +1244,12 @@ func (m *vm) executeFrame(function *bytecode.Function, frame *frame) ([]runtime.
 				valueSlot < 0 || valueSlot >= len(frame.locals) {
 				return nil, fmt.Errorf("vm: range local slot out of range in %q", function.Name)
 			}
-			source := &frame.locals[sourceSlot].Value
-			if source.Kind == runtime.Nil || (source.Kind == runtime.ObjectKind && source.Obj == nil) {
-				frame.ip = int(inst.C)
+			source := frame.locals[sourceSlot].Value
+			if source.Kind == runtime.Nil || (source.Kind == runtime.ObjectKind && source.Object() == nil) {
+				frame.push(runtime.BoolValue(false))
 				continue
 			}
-			mm, ok := source.Obj.(*runtime.Map)
+			mm, ok := source.Object().(*runtime.Map)
 			if source.Kind != runtime.ObjectKind || !ok || mm == nil {
 				return nil, fmt.Errorf("vm: expected map range source in %q", function.Name)
 			}
@@ -1345,19 +1262,16 @@ func (m *vm) executeFrame(function *bytecode.Function, frame *frame) ([]runtime.
 				if !ok {
 					continue
 				}
-				frame.locals[indexSlot].Value.I64 = int64(index)
-				frame.locals[keySlot].Value = entry.Key
-				value := entry.Value
-				if value.Kind == runtime.ObjectKind {
-					value = runtime.CloneForStore(value)
-				}
-				frame.locals[valueSlot].Value = value
+				frame.locals[indexSlot].Value = runtime.IntValue(int64(index))
+				frame.locals[keySlot].Value = runtime.CloneForStore(entry.Key)
+				frame.locals[valueSlot].Value = runtime.CloneForStore(entry.Value)
+				frame.push(runtime.BoolValue(true))
 				found = true
 				break
 			}
 			if !found {
-				frame.locals[indexSlot].Value.I64 = int64(index)
-				frame.ip = int(inst.C)
+				frame.locals[indexSlot].Value = runtime.IntValue(int64(index))
+				frame.push(runtime.BoolValue(false))
 			}
 		case bytecode.OpCallHost:
 			if len(frame.stack) < inst.B {
@@ -1698,6 +1612,28 @@ func execBitwise(frame *frame, fn func(left, right int64) int64) error {
 		frame.push(runtime.Int64Value(fn(left, right)))
 	} else {
 		frame.push(runtime.IntValue(fn(left, right)))
+	}
+	return nil
+}
+
+func (m *vm) execAdd(frame *frame) error {
+	rv, err := frame.pop()
+	if err != nil {
+		return err
+	}
+	lv, err := frame.pop()
+	if err != nil {
+		return err
+	}
+	switch {
+	case lv.Kind == runtime.String && rv.Kind == runtime.String:
+		frame.push(runtime.StringValue(lv.String() + rv.String()))
+	case lv.Kind == runtime.Float64 || rv.Kind == runtime.Float64:
+		frame.push(runtime.Float64Value(asFloat(lv) + asFloat(rv)))
+	case lv.Kind == runtime.Int64 || rv.Kind == runtime.Int64:
+		frame.push(runtime.Int64Value(lv.Int() + rv.Int()))
+	default:
+		frame.push(runtime.IntValue(lv.Int() + rv.Int()))
 	}
 	return nil
 }

@@ -42,9 +42,6 @@ func FormatProgram(program *Program) string {
 		fmt.Fprintf(&b, "    function #%d %s params=%d results=%d locals=%d maxStack=%d variadic=%t\n", i, fn.Name, fn.Params, fn.Results, fn.Locals, fn.MaxStack, fn.Variadic)
 		for pc, inst := range fn.Code {
 			fmt.Fprintf(&b, "      %04d %-36s A=%d B=%d I64=%d", pc, inst.Op.String(), inst.A, inst.B, inst.I64)
-			if inst.C != 0 {
-				fmt.Fprintf(&b, " C=%d", inst.C)
-			}
 			if inst.S != "" {
 				fmt.Fprintf(&b, " S=%q", inst.S)
 			}

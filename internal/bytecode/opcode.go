@@ -93,17 +93,9 @@ const (
 	OpConvertString
 	OpPop
 	OpReturn
-	OpMapGetLocalStringInt
-	OpMapAddLocalStringInt
-	OpAddArrayElemLocalConst
-	OpLocalAddTwoLocals
 )
 
 var opcodeNames = [...]string{
-	OpMapGetLocalStringInt:             "OpMapGetLocalStringInt",
-	OpMapAddLocalStringInt:             "OpMapAddLocalStringInt",
-	OpAddArrayElemLocalConst:           "OpAddArrayElemLocalConst",
-	OpLocalAddTwoLocals:                "OpLocalAddTwoLocals",
 	OpLoadInt:                          "OpLoadInt",
 	OpLoadNil:                          "OpLoadNil",
 	OpLoadBool:                         "OpLoadBool",

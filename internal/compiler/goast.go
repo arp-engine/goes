@@ -85,11 +85,11 @@ func compileDirectGoFiles(checked *sema.Checked, opts CompileOptions) (*bytecode
 				declaredFuncs[decl.Name.Name] = struct{}{}
 				funcs = append(funcs, decl)
 			case *goast.GenDecl:
-				switch decl.Tok {
-				case gotoken.IMPORT:
-				case gotoken.VAR:
-				case gotoken.CONST:
-				case gotoken.TYPE:
+			switch decl.Tok {
+			case gotoken.IMPORT:
+			case gotoken.VAR:
+			case gotoken.CONST:
+			case gotoken.TYPE:
 					collected, ok := collectDirectGoSimpleTypes(decl)
 					if decl.Tok == gotoken.TYPE && !ok {
 						return nil, false, nil
@@ -1843,6 +1843,7 @@ func (fc *funcCompiler) emitDirectGoRange(stmt *goast.RangeStmt) error {
 
 	loopStart := len(fc.function.Code)
 	fc.emitDirectRangeNext(rangeInit, sourceSlot, indexSlot, keySlot, valueSlot)
+	exitJump := fc.emitJump(bytecode.OpJumpIfFalse)
 
 	ctx := fc.pushControl(true)
 	if err := fc.emitDirectGoBlock(stmt.Body); err != nil {
@@ -1852,7 +1853,7 @@ func (fc *funcCompiler) emitDirectGoRange(stmt *goast.RangeStmt) error {
 	fc.emit(bytecode.OpJump, loopStart, 0, 0)
 
 	end := len(fc.function.Code)
-	fc.function.Code[loopStart].C = int32(end)
+	fc.patchJump(exitJump, end)
 	for _, patch := range ctx.breakPatches {
 		fc.patchJump(patch, end)
 	}
@@ -1932,6 +1933,7 @@ func (fc *funcCompiler) emitDirectGoRangeAssign(stmt *goast.RangeStmt) error {
 	}
 	loopStart := len(fc.function.Code)
 	fc.emitDirectRangeNext(rangeInit, sourceSlot, indexSlot, keyTmp, valueTmp)
+	exitJump := fc.emitJump(bytecode.OpJumpIfFalse)
 	if stmt.Key != nil {
 		if err := fc.emitStoreLocalToDirectTarget(stmt.Key, keyTmp); err != nil {
 			return err
@@ -1949,7 +1951,7 @@ func (fc *funcCompiler) emitDirectGoRangeAssign(stmt *goast.RangeStmt) error {
 	}
 	fc.emit(bytecode.OpJump, loopStart, 0, 0)
 	end := len(fc.function.Code)
-	fc.function.Code[loopStart].C = int32(end)
+	fc.patchJump(exitJump, end)
 	for _, patch := range ctx.breakPatches {
 		fc.patchJump(patch, end)
 	}
@@ -2182,17 +2184,6 @@ func (fc *funcCompiler) emitDirectGoLocalAssignFastPath(targetSlot int, value go
 	}
 
 	switch v := value.(type) {
-	case *goast.BinaryExpr:
-		if tok != gotoken.ADD_ASSIGN || v.Op != gotoken.ADD {
-			return false
-		}
-		leftSlot, leftOK := fc.directGoIntLocal(v.X)
-		rightSlot, rightOK := fc.directGoIntLocal(v.Y)
-		if !leftOK || !rightOK {
-			return false
-		}
-		fc.emit(bytecode.OpLocalAddTwoLocals, targetSlot, leftSlot, int64(rightSlot))
-		return true
 	case *goast.BasicLit:
 		literal, err := strconv.ParseInt(v.Value, 10, 64)
 		if err != nil {
@@ -2339,36 +2330,6 @@ func (fc *funcCompiler) emitDirectGoStructFieldAddFastPath(target *goast.Selecto
 	}
 }
 
-func (fc *funcCompiler) directGoIntLocal(expr goast.Expr) (int, bool) {
-	ident, ok := expr.(*goast.Ident)
-	if !ok {
-		return 0, false
-	}
-	slot, ok := fc.lookupSlot(ident.Name)
-	return slot, ok && semaTypes.Identical(fc.slotTypes[slot], semaTypes.IntType)
-}
-
-func (fc *funcCompiler) directGoLocalIntArrayConstIndex(expr *goast.IndexExpr) (int, int64, bool) {
-	base, ok := expr.X.(*goast.Ident)
-	if !ok {
-		return 0, 0, false
-	}
-	slot, ok := fc.lookupSlot(base.Name)
-	if !ok {
-		return 0, 0, false
-	}
-	arrayType, ok := semaTypes.Underlying(fc.slotTypes[slot]).(*semaTypes.ArrayType)
-	if !ok || !semaTypes.Identical(arrayType.Elem, semaTypes.IntType) {
-		return 0, 0, false
-	}
-	lit, ok := expr.Index.(*goast.BasicLit)
-	if !ok || lit.Kind != gotoken.INT {
-		return 0, 0, false
-	}
-	index, err := strconv.ParseInt(lit.Value, 0, 64)
-	return slot, index, err == nil
-}
-
 func (fc *funcCompiler) emitDirectGoArrayElemAddFastPath(target *goast.IndexExpr, value goast.Expr) bool {
 	baseIdent, ok := target.X.(*goast.Ident)
 	if !ok {
@@ -2434,7 +2395,7 @@ func (fc *funcCompiler) emitDirectGoArrayElemAddFastPath(target *goast.IndexExpr
 			return false
 		}
 		fc.emit(bytecode.OpArrayElemAddStructField, baseSlot, indexSlot, int64(sourceSlot))
-		fc.function.Code[len(fc.function.Code)-1].C = int32(selection.FieldIndex)
+		fc.function.Code[len(fc.function.Code)-1].S = strconv.Itoa(selection.FieldIndex)
 		return true
 	default:
 		return false
@@ -2446,26 +2407,6 @@ func (fc *funcCompiler) emitDirectGoMapIndexAddAssign(indexExpr *goast.IndexExpr
 	mapType, ok := semaTypes.Underlying(baseType).(*semaTypes.MapType)
 	if !ok || mapType == nil {
 		return fmt.Errorf("compiler: expected map index update target")
-	}
-	if slot, key, ok := fc.directGoLocalStringIntMapAccess(indexExpr); ok {
-		// A call or other effectful expression may change the map or its entry.
-		simple := false
-		switch rhs := value.(type) {
-		case *goast.BasicLit:
-			simple = rhs.Kind == gotoken.INT
-		case *goast.Ident:
-			_, simple = fc.lookupSlot(rhs.Name)
-		case *goast.IndexExpr:
-			_, _, simple = fc.directGoLocalStringIntMapAccess(rhs)
-		}
-		if simple {
-			if err := fc.emitDirectGoExprForExpectedType(value, mapType.Value); err != nil {
-				return err
-			}
-			fc.emit(bytecode.OpMapAddLocalStringInt, slot, 0, 0)
-			fc.function.Code[len(fc.function.Code)-1].S = key
-			return nil
-		}
 	}
 	if emitBase, emitKey, ok := fc.directGoSimpleMapAccess(indexExpr, mapType); ok {
 		valueSlot, err := fc.declareSlot("_", mapType.Value)
@@ -2638,11 +2579,7 @@ func (fc *funcCompiler) emitDirectGoCondJumpFalse(cond goast.Expr) (int, bool, e
 		}
 		index := len(fc.function.Code)
 		fc.emit(bytecode.OpJumpIfLocalBitAndIntEqConstFalse, -1, slot, mask)
-		if int64(int32(expected)) == expected {
-			fc.function.Code[index].C = int32(expected)
-		} else {
-			fc.function.Code[index].S = strconv.FormatInt(expected, 10)
-		}
+		fc.function.Code[index].S = strconv.FormatInt(expected, 10)
 		return index, true, nil
 	}
 
@@ -3046,14 +2983,6 @@ func (fc *funcCompiler) emitDirectGoExpr(expr goast.Expr) error {
 		if err := fc.emitDirectGoExpr(expr.X); err != nil {
 			return err
 		}
-		if expr.Op == gotoken.ADD && semaTypes.Identical(directGoFactOrExprType(fc.parent.facts, expr.X), semaTypes.IntType) {
-			if right, ok := expr.Y.(*goast.IndexExpr); ok {
-				if slot, index, ok := fc.directGoLocalIntArrayConstIndex(right); ok {
-					fc.emit(bytecode.OpAddArrayElemLocalConst, slot, 0, index)
-					return nil
-				}
-			}
-		}
 		if err := fc.emitDirectGoExpr(expr.Y); err != nil {
 			return err
 		}
@@ -3313,9 +3242,21 @@ func (fc *funcCompiler) emitDirectGoExpr(expr goast.Expr) error {
 		if _, ok := semaTypes.Underlying(baseType).(*semaTypes.MapType); ok {
 			return fc.emitDirectGoMapGet(expr, false)
 		}
-		if slot, index, ok := fc.directGoLocalIntArrayConstIndex(expr); ok {
-			fc.emit(bytecode.OpLoadArrayElemLocalConst, slot, 0, index)
-			return nil
+		if baseIdent, ok := expr.X.(*goast.Ident); ok {
+			if baseSlot, ok := fc.lookupSlot(baseIdent.Name); ok {
+				baseType, ok := fc.slotTypes[baseSlot]
+				if ok {
+					if arrayType, ok := semaTypes.Underlying(baseType).(*semaTypes.ArrayType); ok && semaTypes.Identical(arrayType.Elem, semaTypes.IntType) {
+						if lit, ok := expr.Index.(*goast.BasicLit); ok {
+							index, err := strconv.ParseInt(lit.Value, 10, 64)
+							if err == nil {
+								fc.emit(bytecode.OpLoadArrayElemLocalConst, baseSlot, 0, index)
+								return nil
+							}
+						}
+					}
+				}
+			}
 		}
 		if err := fc.emitDirectGoExpr(expr.X); err != nil {
 			return err
@@ -3361,13 +3302,6 @@ func (fc *funcCompiler) emitDirectGoExpr(expr goast.Expr) error {
 }
 
 func (fc *funcCompiler) emitDirectGoMapGet(expr *goast.IndexExpr, commaOK bool) error {
-	if !commaOK {
-		if slot, key, ok := fc.directGoLocalStringIntMapAccess(expr); ok {
-			fc.emit(bytecode.OpMapGetLocalStringInt, slot, 0, 0)
-			fc.function.Code[len(fc.function.Code)-1].S = key
-			return nil
-		}
-	}
 	baseType := directGoFactOrExprType(fc.parent.facts, expr.X)
 	mapType, ok := semaTypes.Underlying(baseType).(*semaTypes.MapType)
 	if !ok || mapType == nil {
@@ -3390,27 +3324,6 @@ func (fc *funcCompiler) emitDirectGoMapGet(expr *goast.IndexExpr, commaOK bool) 
 	fc.emit(op, int(kind), 0, 0)
 	fc.function.Code[len(fc.function.Code)-1].S = typeName
 	return nil
-}
-
-func (fc *funcCompiler) directGoLocalStringIntMapAccess(expr *goast.IndexExpr) (int, string, bool) {
-	base, ok := expr.X.(*goast.Ident)
-	if !ok {
-		return 0, "", false
-	}
-	literal, ok := expr.Index.(*goast.BasicLit)
-	if !ok || literal.Kind != gotoken.STRING {
-		return 0, "", false
-	}
-	slot, ok := fc.lookupSlot(base.Name)
-	if !ok {
-		return 0, "", false
-	}
-	mapType, ok := semaTypes.Underlying(fc.slotTypes[slot]).(*semaTypes.MapType)
-	if !ok || !semaTypes.Identical(mapType.Key, semaTypes.StringType) || !semaTypes.Identical(mapType.Value, semaTypes.IntType) {
-		return 0, "", false
-	}
-	key, err := strconv.Unquote(literal.Value)
-	return slot, key, err == nil
 }
 
 func (fc *funcCompiler) emitDirectGoConversion(src, dst semaTypes.Type) error {

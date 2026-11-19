@@ -48,9 +48,6 @@ func ProgramHash(program *bytecode.Program) string {
 		fmt.Fprintf(h, "fn %d %s params=%d results=%d variadic=%t locals=%d maxstack=%d\n", i, fn.Name, fn.Params, fn.Results, fn.Variadic, fn.Locals, fn.MaxStack)
 		for _, inst := range fn.Code {
 			fmt.Fprintf(h, "inst %d %d %d %d %q\n", inst.Op, inst.A, inst.B, inst.I64, inst.S)
-			if inst.C != 0 {
-				fmt.Fprintf(h, "operand C=%d\n", inst.C)
-			}
 		}
 	}
 	for i, fn := range program.HostFunctions {

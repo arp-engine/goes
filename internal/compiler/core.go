@@ -356,9 +356,9 @@ func stackDelta(inst bytecode.Instruction) int {
 		bytecode.OpLoadFloat64, bytecode.OpLoadString, bytecode.OpLoadLocal, bytecode.OpLoadCapture,
 		bytecode.OpLoadGlobal, bytecode.OpLoadStructFieldLocal, bytecode.OpLoadArrayElemLocalConst,
 		bytecode.OpAddrLocal, bytecode.OpAddrCapture, bytecode.OpAddrGlobal, bytecode.OpMakeFuncValue,
-		bytecode.OpMakeMap, bytecode.OpMapGetLocalStringInt:
+		bytecode.OpMakeMap:
 		return 1
-	case bytecode.OpStoreLocal, bytecode.OpStoreGlobal, bytecode.OpJumpIfFalse, bytecode.OpPop, bytecode.OpReturn, bytecode.OpMapAddLocalStringInt:
+	case bytecode.OpStoreLocal, bytecode.OpStoreGlobal, bytecode.OpJumpIfFalse, bytecode.OpPop, bytecode.OpReturn:
 		return -1
 	case bytecode.OpAdd, bytecode.OpSub, bytecode.OpMul, bytecode.OpDiv, bytecode.OpModInt,
 		bytecode.OpBitAnd, bytecode.OpBitOr, bytecode.OpBitXor, bytecode.OpBitClear,
@@ -398,12 +398,11 @@ func stackDelta(inst bytecode.Instruction) int {
 	case bytecode.OpRangeInitIndexed, bytecode.OpRangeInitMap:
 		return -1
 	case bytecode.OpLocalAddIntConst, bytecode.OpLocalSubIntConst,
-		bytecode.OpLocalAddLocal, bytecode.OpLocalSubLocal, bytecode.OpLocalAddTwoLocals,
+		bytecode.OpLocalAddLocal, bytecode.OpLocalSubLocal,
 		bytecode.OpJumpIfLocalIntLtConstFalse, bytecode.OpJumpIfLocalBitAndIntEqConstFalse,
 		bytecode.OpStructFieldAddIntConst, bytecode.OpStructFieldAddLocal, bytecode.OpStructFieldAddField,
 		bytecode.OpArrayElemAddIntConst, bytecode.OpArrayElemAddLocal, bytecode.OpArrayElemAddStructField,
-		bytecode.OpLocalAddStructField, bytecode.OpLocalAddArrayElemConst, bytecode.OpAddArrayElemLocalConst,
-		bytecode.OpRangeNextIndexed, bytecode.OpRangeNextMap, bytecode.OpMakeMethodValue:
+		bytecode.OpLocalAddStructField, bytecode.OpLocalAddArrayElemConst, bytecode.OpMakeMethodValue:
 		return 0
 	case bytecode.OpCall:
 		return 1 - inst.B
@@ -421,6 +420,8 @@ func stackDelta(inst bytecode.Instruction) int {
 		return -3
 	case bytecode.OpMapDelete:
 		return -2
+	case bytecode.OpRangeNextIndexed, bytecode.OpRangeNextMap:
+		return 1
 	default:
 		return 0
 	}

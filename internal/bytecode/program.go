@@ -4,7 +4,6 @@ import rt "goes/runtime"
 
 type Instruction struct {
 	Op  Opcode
-	C   int32
 	A   int
 	B   int
 	I64 int64
