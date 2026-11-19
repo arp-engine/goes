@@ -6,11 +6,10 @@ import (
 	gotoken "go/token"
 
 	"goes/runtime"
-	semaTypes "goes/types"
 )
 
 type CheckOptions struct {
-	HostFunctions    map[string]semaTypes.HostSignature
+	HostFunctions    map[string]runtime.TypedHostSignature
 	HostRegistry     *runtime.HostRegistry
 	ImportedPackages map[string]*ImportedPackage
 	PkgPath          string
@@ -41,25 +40,25 @@ type resolver struct {
 	scopeKinds       map[*Scope]scopeKind
 	scopeFuncs       map[*Scope]*funcFrame
 	currentFunc      *funcFrame
-	hostFunctions    map[string]semaTypes.HostSignature
-	hostTypes        map[string]semaTypes.Type
+	hostFunctions    map[string]runtime.TypedHostSignature
+	hostTypes        map[string]runtime.ScriptType
 	hostConsts       map[string]hostConstBinding
 	importedPackages map[string]*ImportedPackage
 }
 
 type hostConstBinding struct {
-	typ  semaTypes.Type
+	typ  runtime.ScriptType
 	expr goast.Expr
 }
 
 type ResolveOptions struct {
-	HostFunctions    map[string]semaTypes.HostSignature
+	HostFunctions    map[string]runtime.TypedHostSignature
 	HostRegistry     *runtime.HostRegistry
 	ImportedPackages map[string]*ImportedPackage
 	PkgPath          string
 }
 
-func hostStructTypesFromRegistry(registry *runtime.HostRegistry) map[string]semaTypes.Type {
+func hostStructTypesFromRegistry(registry *runtime.HostRegistry) map[string]runtime.ScriptType {
 	if registry == nil {
 		return nil
 	}
@@ -67,7 +66,7 @@ func hostStructTypesFromRegistry(registry *runtime.HostRegistry) map[string]sema
 	if len(schemas) == 0 {
 		return nil
 	}
-	result := make(map[string]semaTypes.Type, len(schemas))
+	result := make(map[string]runtime.ScriptType, len(schemas))
 	for name, schema := range schemas {
 		result[name] = namedTypeFromSchema(schema)
 	}
@@ -92,51 +91,51 @@ func hostConstsFromRegistry(registry *runtime.HostRegistry) map[string]hostConst
 	return result
 }
 
-func namedTypeFromSchema(schema runtime.StructSchema) semaTypes.Type {
-	fields := make([]semaTypes.Type, len(schema.FieldKinds))
+func namedTypeFromSchema(schema runtime.StructSchema) runtime.ScriptType {
+	fields := make([]runtime.ScriptType, len(schema.FieldKinds))
 	for i, kind := range schema.FieldKinds {
 		fields[i] = typeForRuntimeKind(kind)
 	}
-	return &semaTypes.NamedType{
+	return &runtime.NamedType{
 		Name: schema.Name,
-		Underlying: &semaTypes.StructType{
+		Underlying: &runtime.StructType{
 			FieldNames: append([]string(nil), schema.FieldNames...),
 			Fields:     fields,
 		},
 	}
 }
 
-func typeForRuntimeKind(kind runtime.Kind) semaTypes.Type {
+func typeForRuntimeKind(kind runtime.Kind) runtime.ScriptType {
 	switch kind {
 	case runtime.Bool:
-		return semaTypes.BoolType
+		return runtime.BuiltinBoolType
 	case runtime.Int:
-		return semaTypes.IntType
+		return runtime.BuiltinIntType
 	case runtime.Int64:
-		return semaTypes.Int64Type
+		return runtime.BuiltinInt64Type
 	case runtime.Float64:
-		return semaTypes.Float64Type
+		return runtime.BuiltinFloat64Type
 	case runtime.String:
-		return semaTypes.StringType
+		return runtime.BuiltinStringType
 	default:
-		return semaTypes.InvalidType
+		return runtime.BuiltinInvalidType
 	}
 }
 
-func semaTypeForHostConst(typ runtime.Type) semaTypes.Type {
+func semaTypeForHostConst(typ runtime.Type) runtime.ScriptType {
 	switch typ {
 	case runtime.BoolType:
-		return semaTypes.BoolType
+		return runtime.BuiltinBoolType
 	case runtime.IntType:
-		return semaTypes.IntType
+		return runtime.BuiltinIntType
 	case runtime.Int64Type:
-		return semaTypes.Int64Type
+		return runtime.BuiltinInt64Type
 	case runtime.Float64Type:
-		return semaTypes.Float64Type
+		return runtime.BuiltinFloat64Type
 	case runtime.StringType:
-		return semaTypes.StringType
+		return runtime.BuiltinStringType
 	default:
-		return semaTypes.InvalidType
+		return runtime.BuiltinInvalidType
 	}
 }
 
@@ -160,35 +159,35 @@ func hostConstExpr(value runtime.ConstValue) goast.Expr {
 	}
 }
 
-func structTypeForSelector(typ semaTypes.Type) (*semaTypes.StructType, bool, bool) {
-	switch t := semaTypes.Underlying(typ).(type) {
-	case *semaTypes.StructType:
+func structTypeForSelector(typ runtime.ScriptType) (*runtime.StructType, bool, bool) {
+	switch t := runtime.Underlying(typ).(type) {
+	case *runtime.StructType:
 		return t, false, true
-	case *semaTypes.PointerType:
-		strct, ok := semaTypes.Underlying(t.Base).(*semaTypes.StructType)
+	case *runtime.PointerType:
+		strct, ok := runtime.Underlying(t.Base).(*runtime.StructType)
 		return strct, true, ok && strct != nil
 	default:
 		return nil, false, false
 	}
 }
 
-func conversionAllowed(src, dst semaTypes.Type) bool {
-	if semaTypes.IsInvalid(src) || semaTypes.IsInvalid(dst) {
+func conversionAllowed(src, dst runtime.ScriptType) bool {
+	if runtime.IsInvalid(src) || runtime.IsInvalid(dst) {
 		return false
 	}
-	if semaTypes.Identical(src, dst) || semaTypes.AssignableTo(src, dst) {
+	if runtime.Identical(src, dst) || runtime.AssignableTo(src, dst) {
 		return true
 	}
-	if semaTypes.IsNumeric(src) && semaTypes.IsNumeric(dst) {
+	if runtime.IsNumeric(src) && runtime.IsNumeric(dst) {
 		return true
 	}
-	if semaTypes.IsNumeric(src) && semaTypes.IsString(dst) {
+	if runtime.IsNumeric(src) && runtime.IsString(dst) {
 		return true
 	}
-	if semaTypes.IsString(src) && semaTypes.IsNumeric(dst) {
+	if runtime.IsString(src) && runtime.IsNumeric(dst) {
 		return true
 	}
-	return semaTypes.Identical(semaTypes.Underlying(src), semaTypes.Underlying(dst))
+	return runtime.Identical(runtime.Underlying(src), runtime.Underlying(dst))
 }
 
 func (r *resolver) declare(scope *Scope, sym *Symbol) error {

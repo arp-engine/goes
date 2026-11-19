@@ -7,7 +7,6 @@ import (
 	"goes/internal/bytecode"
 	"goes/internal/sema"
 	"goes/runtime"
-	semaTypes "goes/types"
 )
 
 func newCompiler(opts CompileOptions, checked *sema.Checked) *compiler {
@@ -26,10 +25,10 @@ func newCompiler(opts CompileOptions, checked *sema.Checked) *compiler {
 		fset:          checked.FileSet,
 		funcIndex:     make(map[string]int),
 		pkgFuncIndex:  make(map[string]int),
-		funcTypes:     make(map[string]*semaTypes.FuncType),
-		types:         make(map[string]semaTypes.Type),
+		funcTypes:     make(map[string]*runtime.FuncType),
+		types:         make(map[string]runtime.ScriptType),
 		globalIndex:   make(map[string]int),
-		globalTypes:   make(map[int]semaTypes.Type),
+		globalTypes:   make(map[int]runtime.ScriptType),
 		hostFunctions: opts.HostFunctions,
 	}
 }
@@ -40,17 +39,17 @@ type compiler struct {
 	fset          *gotoken.FileSet
 	funcIndex     map[string]int
 	pkgFuncIndex  map[string]int
-	funcTypes     map[string]*semaTypes.FuncType
-	types         map[string]semaTypes.Type
+	funcTypes     map[string]*runtime.FuncType
+	types         map[string]runtime.ScriptType
 	globalIndex   map[string]int
-	globalTypes   map[int]semaTypes.Type
-	hostFunctions map[string]semaTypes.HostSignature
+	globalTypes   map[int]runtime.ScriptType
+	hostFunctions map[string]runtime.TypedHostSignature
 }
 
 type scope struct {
 	parent *scope
 	slots  map[string]int
-	types  map[string]semaTypes.Type
+	types  map[string]runtime.ScriptType
 }
 
 type funcCompiler struct {
@@ -60,11 +59,11 @@ type funcCompiler struct {
 	function      *bytecode.Function
 	scope         *scope
 	nextSlot      int
-	slotTypes     map[int]semaTypes.Type
-	resultTypes   []semaTypes.Type
+	slotTypes     map[int]runtime.ScriptType
+	resultTypes   []runtime.ScriptType
 	namedResults  []int
 	captureSlots  map[string]int
-	captureTypes  map[int]semaTypes.Type
+	captureTypes  map[int]runtime.ScriptType
 	captures      []captureRef
 	controlStack  []*controlContext
 	currentPos    gotoken.Pos
@@ -80,7 +79,7 @@ type controlContext struct {
 type captureRef struct {
 	fromCapture bool
 	index       int
-	typ         semaTypes.Type
+	typ         runtime.ScriptType
 }
 
 func (c *compiler) compileImportedModules(imports []*ImportedModule) error {
@@ -164,7 +163,7 @@ func (c *compiler) collectHostFunctions() {
 	}
 }
 
-func structSchemaForNamed(name string, strct *semaTypes.StructType) (runtime.StructSchema, error) {
+func structSchemaForNamed(name string, strct *runtime.StructType) (runtime.StructSchema, error) {
 	schema := runtime.StructSchema{
 		Name:       name,
 		FieldNames: append([]string(nil), strct.FieldNames...),
@@ -180,68 +179,68 @@ func structSchemaForNamed(name string, strct *semaTypes.StructType) (runtime.Str
 	return schema, nil
 }
 
-func runtimeKindForType(typ semaTypes.Type) (runtime.Kind, error) {
-	switch semaTypes.Underlying(typ).Kind() {
-	case semaTypes.Bool:
+func runtimeKindForType(typ runtime.ScriptType) (runtime.Kind, error) {
+	switch runtime.Underlying(typ).Kind() {
+	case runtime.TypeKindBool:
 		return runtime.Bool, nil
-	case semaTypes.Int:
+	case runtime.TypeKindInt:
 		return runtime.Int, nil
-	case semaTypes.Int64:
+	case runtime.TypeKindInt64:
 		return runtime.Int64, nil
-	case semaTypes.Float64:
+	case runtime.TypeKindFloat64:
 		return runtime.Float64, nil
-	case semaTypes.String:
+	case runtime.TypeKindString:
 		return runtime.String, nil
 	default:
 		return runtime.Invalid, fmt.Errorf("unsupported bridge field type %s", typ.String())
 	}
 }
 
-func runtimeZeroKindForType(typ semaTypes.Type) (runtime.Kind, string, error) {
-	if named, ok := typ.(*semaTypes.NamedType); ok {
-		if _, ok := semaTypes.Underlying(named).(*semaTypes.StructType); ok {
+func runtimeZeroKindForType(typ runtime.ScriptType) (runtime.Kind, string, error) {
+	if named, ok := typ.(*runtime.NamedType); ok {
+		if _, ok := runtime.Underlying(named).(*runtime.StructType); ok {
 			return runtime.Invalid, named.Name, nil
 		}
 	}
-	switch semaTypes.Underlying(typ).Kind() {
-	case semaTypes.Bool:
+	switch runtime.Underlying(typ).Kind() {
+	case runtime.TypeKindBool:
 		return runtime.Bool, "", nil
-	case semaTypes.Int:
+	case runtime.TypeKindInt:
 		return runtime.Int, "", nil
-	case semaTypes.Int64:
+	case runtime.TypeKindInt64:
 		return runtime.Int64, "", nil
-	case semaTypes.Float64:
+	case runtime.TypeKindFloat64:
 		return runtime.Float64, "", nil
-	case semaTypes.String:
+	case runtime.TypeKindString:
 		return runtime.String, "", nil
-	case semaTypes.Pointer, semaTypes.Slice, semaTypes.Map, semaTypes.Func:
+	case runtime.TypeKindPointer, runtime.TypeKindSlice, runtime.TypeKindMap, runtime.TypeKindFunc:
 		return runtime.Nil, "", nil
 	default:
 		return runtime.Invalid, "", fmt.Errorf("unsupported make slice element type %s", typ.String())
 	}
 }
 
-func rangeKeyValueTypes(rangeType semaTypes.Type) (semaTypes.Type, semaTypes.Type, error) {
-	if semaTypes.IsInteger(rangeType) {
-		return rangeType, semaTypes.InvalidType, nil
+func rangeKeyValueTypes(rangeType runtime.ScriptType) (runtime.ScriptType, runtime.ScriptType, error) {
+	if runtime.IsInteger(rangeType) {
+		return rangeType, runtime.BuiltinInvalidType, nil
 	}
-	switch t := semaTypes.Underlying(rangeType).(type) {
-	case *semaTypes.MapType:
+	switch t := runtime.Underlying(rangeType).(type) {
+	case *runtime.MapType:
 		return t.Key, t.Value, nil
-	case *semaTypes.ArrayType:
-		return semaTypes.IntType, t.Elem, nil
-	case *semaTypes.SliceType:
-		return semaTypes.IntType, t.Elem, nil
+	case *runtime.ArrayType:
+		return runtime.BuiltinIntType, t.Elem, nil
+	case *runtime.SliceType:
+		return runtime.BuiltinIntType, t.Elem, nil
 	default:
 		return nil, nil, fmt.Errorf("compiler: cannot range over %s", rangeType.String())
 	}
 }
 
-func (fc *funcCompiler) declareSlot(name string, typ semaTypes.Type) (int, error) {
+func (fc *funcCompiler) declareSlot(name string, typ runtime.ScriptType) (int, error) {
 	return fc.declareSlotKind(name, typ, bytecode.DebugLocalLocal)
 }
 
-func (fc *funcCompiler) declareSlotKind(name string, typ semaTypes.Type, kind bytecode.DebugLocalKind) (int, error) {
+func (fc *funcCompiler) declareSlotKind(name string, typ runtime.ScriptType, kind bytecode.DebugLocalKind) (int, error) {
 	if name == "_" {
 		slot := fc.nextSlot
 		fc.nextSlot++
@@ -259,7 +258,7 @@ func (fc *funcCompiler) declareSlotKind(name string, typ semaTypes.Type, kind by
 	return slot, nil
 }
 
-func (fc *funcCompiler) addDebugLocal(name string, slot int, kind bytecode.DebugLocalKind, typ semaTypes.Type) {
+func (fc *funcCompiler) addDebugLocal(name string, slot int, kind bytecode.DebugLocalKind, typ runtime.ScriptType) {
 	if fc == nil || name == "" || name == "_" || typ == nil {
 		return
 	}
@@ -433,7 +432,7 @@ func (c *compiler) rebindFunctionChain(fc *funcCompiler) {
 	}
 }
 
-func (fc *funcCompiler) ensureCapture(name string) (int, semaTypes.Type, error) {
+func (fc *funcCompiler) ensureCapture(name string) (int, runtime.ScriptType, error) {
 	if index, ok := fc.captureSlots[name]; ok {
 		return index, fc.captureTypes[index], nil
 	}
@@ -477,7 +476,7 @@ func newScope(parent *scope) *scope {
 	return &scope{
 		parent: parent,
 		slots:  make(map[string]int),
-		types:  make(map[string]semaTypes.Type),
+		types:  make(map[string]runtime.ScriptType),
 	}
 }
 
@@ -498,7 +497,7 @@ func (s *scope) lookup(name string) (int, bool) {
 	return 0, false
 }
 
-func (s *scope) lookupTypeLocal(name string) (semaTypes.Type, bool) {
+func (s *scope) lookupTypeLocal(name string) (runtime.ScriptType, bool) {
 	if s == nil || s.types == nil {
 		return nil, false
 	}
@@ -506,7 +505,7 @@ func (s *scope) lookupTypeLocal(name string) (semaTypes.Type, bool) {
 	return typ, ok
 }
 
-func (s *scope) lookupType(name string) (semaTypes.Type, bool) {
+func (s *scope) lookupType(name string) (runtime.ScriptType, bool) {
 	for current := s; current != nil; current = current.parent {
 		if typ, ok := current.lookupTypeLocal(name); ok {
 			return typ, true
@@ -562,22 +561,22 @@ func (fc *funcCompiler) currentContinueControl() *controlContext {
 	return nil
 }
 
-func (fc *funcCompiler) emitZeroValue(typ semaTypes.Type) error {
-	switch semaTypes.Underlying(typ).Kind() {
-	case semaTypes.Nil:
+func (fc *funcCompiler) emitZeroValue(typ runtime.ScriptType) error {
+	switch runtime.Underlying(typ).Kind() {
+	case runtime.TypeKindNil:
 		fc.emit(bytecode.OpLoadNil, 0, 0, 0)
-	case semaTypes.Bool:
+	case runtime.TypeKindBool:
 		fc.emit(bytecode.OpLoadBool, 0, 0, 0)
-	case semaTypes.Int:
+	case runtime.TypeKindInt:
 		fc.emit(bytecode.OpLoadInt, 0, 0, 0)
-	case semaTypes.Int64:
+	case runtime.TypeKindInt64:
 		fc.emit(bytecode.OpLoadInt64, 0, 0, 0)
-	case semaTypes.Float64:
+	case runtime.TypeKindFloat64:
 		fc.emit(bytecode.OpLoadFloat64, 0, 0, 0)
 		fc.function.Code[len(fc.function.Code)-1].S = "0"
-	case semaTypes.String:
+	case runtime.TypeKindString:
 		fc.emit(bytecode.OpLoadString, 0, 0, 0)
-	case semaTypes.Pointer, semaTypes.Slice, semaTypes.Map, semaTypes.Func:
+	case runtime.TypeKindPointer, runtime.TypeKindSlice, runtime.TypeKindMap, runtime.TypeKindFunc:
 		fc.emit(bytecode.OpLoadNil, 0, 0, 0)
 	default:
 		return fmt.Errorf("compiler: zero values are unsupported for %s", typ.String())

@@ -2,12 +2,13 @@ package sema
 
 import (
 	"fmt"
-	semaTypes "goes/types"
 	goast "go/ast"
 	gotoken "go/token"
 	"strconv"
 	"strings"
 	"unicode"
+
+	"goes/runtime"
 )
 
 func ResolveGoPackage(fset *gotoken.FileSet, files []*goast.File) (*Info, error) {
@@ -19,7 +20,7 @@ func ResolveGoPackageWithOptions(_ *gotoken.FileSet, files []*goast.File, opts R
 		info: &Facts{
 			Bindings:   make(map[any]*Symbol),
 			Captures:   make(map[any]*Symbol),
-			Types:      make(map[any]semaTypes.Type),
+			Types:      make(map[any]runtime.ScriptType),
 			ConstExprs: make(map[any]any),
 			Selections: make(map[any]*Selection),
 		},
@@ -157,7 +158,7 @@ func (r *resolver) declareGoPackageNames(scope *Scope, file *goast.File) error {
 				for _, spec := range decl.Specs {
 					valueSpec := spec.(*goast.ValueSpec)
 					for _, name := range valueSpec.Names {
-						sym := &Symbol{Name: name.Name, PkgPath: r.pkgPath, Exported: isExported(name.Name), Kind: SymVar, Type: semaTypes.InvalidType}
+						sym := &Symbol{Name: name.Name, PkgPath: r.pkgPath, Exported: isExported(name.Name), Kind: SymVar, Type: runtime.BuiltinInvalidType}
 						if err := r.declare(scope, sym); err != nil {
 							return err
 						}
@@ -167,7 +168,7 @@ func (r *resolver) declareGoPackageNames(scope *Scope, file *goast.File) error {
 				for _, spec := range decl.Specs {
 					valueSpec := spec.(*goast.ValueSpec)
 					for i, name := range valueSpec.Names {
-						sym := &Symbol{Name: name.Name, PkgPath: r.pkgPath, Exported: isExported(name.Name), Kind: SymConst, Type: semaTypes.InvalidType}
+						sym := &Symbol{Name: name.Name, PkgPath: r.pkgPath, Exported: isExported(name.Name), Kind: SymConst, Type: runtime.BuiltinInvalidType}
 						if err := r.declare(scope, sym); err != nil {
 							return err
 						}
@@ -181,7 +182,7 @@ func (r *resolver) declareGoPackageNames(scope *Scope, file *goast.File) error {
 			case gotoken.TYPE:
 				for _, spec := range decl.Specs {
 					typeSpec := spec.(*goast.TypeSpec)
-					named := &semaTypes.NamedType{Name: typeSpec.Name.Name, PkgPath: r.pkgPath, Underlying: semaTypes.InvalidType}
+					named := &runtime.NamedType{Name: typeSpec.Name.Name, PkgPath: r.pkgPath, Underlying: runtime.BuiltinInvalidType}
 					sym := &Symbol{Name: typeSpec.Name.Name, PkgPath: r.pkgPath, Exported: isExported(typeSpec.Name.Name), Kind: SymType, Type: named}
 					if err := r.declare(scope, sym); err != nil {
 						return err
@@ -190,7 +191,7 @@ func (r *resolver) declareGoPackageNames(scope *Scope, file *goast.File) error {
 			}
 		case *goast.FuncDecl:
 			if decl.Recv == nil {
-				sym := &Symbol{Name: decl.Name.Name, PkgPath: r.pkgPath, Exported: isExported(decl.Name.Name), Kind: SymFunc, Type: semaTypes.InvalidType}
+				sym := &Symbol{Name: decl.Name.Name, PkgPath: r.pkgPath, Exported: isExported(decl.Name.Name), Kind: SymFunc, Type: runtime.BuiltinInvalidType}
 				if err := r.declare(scope, sym); err != nil {
 					return err
 				}
@@ -273,7 +274,7 @@ func (r *resolver) defineGoPackageTypes(scope *Scope, file *goast.File) error {
 		for _, spec := range gen.Specs {
 			typeSpec := spec.(*goast.TypeSpec)
 			sym := scope.LookupLocal(typeSpec.Name.Name)
-			named, _ := sym.Type.(*semaTypes.NamedType)
+			named, _ := sym.Type.(*runtime.NamedType)
 			underlying, err := r.resolveGoTypeExpr(scope, typeSpec.Type)
 			if err != nil {
 				return err
@@ -292,7 +293,7 @@ func (r *resolver) defineGoPackageValueTypes(scope *Scope, file *goast.File) err
 			case gotoken.VAR, gotoken.CONST:
 				for _, spec := range decl.Specs {
 					valueSpec := spec.(*goast.ValueSpec)
-					var explicitType semaTypes.Type
+					var explicitType runtime.ScriptType
 					if valueSpec.Type != nil {
 						typ, err := r.resolveGoTypeExpr(scope, valueSpec.Type)
 						if err != nil {
@@ -309,7 +310,7 @@ func (r *resolver) defineGoPackageValueTypes(scope *Scope, file *goast.File) err
 							case len(valueSpec.Values) == 1:
 								typ = r.inferGoExprType(scope, valueSpec.Values[0])
 							default:
-								typ = semaTypes.InvalidType
+								typ = runtime.BuiltinInvalidType
 							}
 						}
 						if sym := scope.LookupLocal(name.Name); sym != nil {
@@ -364,7 +365,7 @@ func (r *resolver) defineGoPackageMethods(scope *Scope, file *goast.File) error 
 		if err != nil {
 			return err
 		}
-		sig, ok := sigType.(*semaTypes.FuncType)
+		sig, ok := sigType.(*runtime.FuncType)
 		if !ok || sig == nil {
 			return fmt.Errorf("sema: method %q has unexpected signature type %T", funcDecl.Name.Name, sigType)
 		}
@@ -373,7 +374,7 @@ func (r *resolver) defineGoPackageMethods(scope *Scope, file *goast.File) error 
 				return fmt.Errorf("sema: duplicate method %q on %s", funcDecl.Name.Name, named.Name)
 			}
 		}
-		named.Methods = append(named.Methods, semaTypes.Method{Name: funcDecl.Name.Name, Type: sig, PointerRecv: ptrRecv})
+		named.Methods = append(named.Methods, runtime.Method{Name: funcDecl.Name.Name, Type: sig, PointerRecv: ptrRecv})
 	}
 	return nil
 }
@@ -524,7 +525,7 @@ func (r *resolver) resolveGoStmt(scope *Scope, stmt goast.Stmt) error {
 					return err
 				}
 			}
-			rhsTypes := make([]semaTypes.Type, 0, len(stmt.Rhs))
+			rhsTypes := make([]runtime.ScriptType, 0, len(stmt.Rhs))
 			for _, expr := range stmt.Rhs {
 				rhsTypes = append(rhsTypes, r.inferGoExprTypes(scope, expr)...)
 			}
@@ -536,7 +537,7 @@ func (r *resolver) resolveGoStmt(scope *Scope, stmt goast.Stmt) error {
 				if scope.LookupLocal(ident.Name) != nil {
 					continue
 				}
-				var typ semaTypes.Type = semaTypes.InvalidType
+				var typ runtime.ScriptType = runtime.BuiltinInvalidType
 				if i < len(rhsTypes) {
 					typ = rhsTypes[i]
 				}
@@ -610,20 +611,20 @@ func (r *resolver) resolveGoStmt(scope *Scope, stmt goast.Stmt) error {
 			return err
 		}
 		rangeType := r.inferGoExprType(rangeScope, stmt.X)
-		var keyType semaTypes.Type = semaTypes.InvalidType
-		var valueType semaTypes.Type = semaTypes.InvalidType
-		switch t := semaTypes.Underlying(rangeType).(type) {
-		case *semaTypes.MapType:
+		var keyType runtime.ScriptType = runtime.BuiltinInvalidType
+		var valueType runtime.ScriptType = runtime.BuiltinInvalidType
+		switch t := runtime.Underlying(rangeType).(type) {
+		case *runtime.MapType:
 			keyType = t.Key
 			valueType = t.Value
-		case *semaTypes.ArrayType:
-			keyType = semaTypes.IntType
+		case *runtime.ArrayType:
+			keyType = runtime.BuiltinIntType
 			valueType = t.Elem
-		case *semaTypes.SliceType:
-			keyType = semaTypes.IntType
+		case *runtime.SliceType:
+			keyType = runtime.BuiltinIntType
 			valueType = t.Elem
 		default:
-			if semaTypes.IsInteger(rangeType) {
+			if runtime.IsInteger(rangeType) {
 				keyType = rangeType
 			}
 		}
@@ -712,7 +713,7 @@ func (r *resolver) resolveGoLocalDecl(scope *Scope, decl goast.Decl) error {
 	case gotoken.VAR:
 		for _, spec := range gen.Specs {
 			valueSpec := spec.(*goast.ValueSpec)
-			var explicitType semaTypes.Type
+			var explicitType runtime.ScriptType
 			var err error
 			if valueSpec.Type != nil {
 				explicitType, err = r.resolveGoTypeExpr(scope, valueSpec.Type)
@@ -738,7 +739,7 @@ func (r *resolver) resolveGoLocalDecl(scope *Scope, decl goast.Decl) error {
 	case gotoken.CONST:
 		for _, spec := range gen.Specs {
 			valueSpec := spec.(*goast.ValueSpec)
-			var explicitType semaTypes.Type
+			var explicitType runtime.ScriptType
 			var err error
 			if valueSpec.Type != nil {
 				explicitType, err = r.resolveGoTypeExpr(scope, valueSpec.Type)
@@ -770,7 +771,7 @@ func (r *resolver) resolveGoLocalDecl(scope *Scope, decl goast.Decl) error {
 	case gotoken.TYPE:
 		for _, spec := range gen.Specs {
 			typeSpec := spec.(*goast.TypeSpec)
-			named := &semaTypes.NamedType{Name: typeSpec.Name.Name, Underlying: semaTypes.InvalidType}
+			named := &runtime.NamedType{Name: typeSpec.Name.Name, Underlying: runtime.BuiltinInvalidType}
 			if err := r.declare(scope, &Symbol{Name: typeSpec.Name.Name, Kind: SymType, Type: named}); err != nil {
 				return err
 			}
@@ -784,10 +785,10 @@ func (r *resolver) resolveGoLocalDecl(scope *Scope, decl goast.Decl) error {
 	return nil
 }
 
-func (r *resolver) resolveGoTypeExpr(scope *Scope, expr goast.Expr) (semaTypes.Type, error) {
+func (r *resolver) resolveGoTypeExpr(scope *Scope, expr goast.Expr) (runtime.ScriptType, error) {
 	switch expr := expr.(type) {
 	case *goast.Ident:
-		if builtin := semaTypes.LookupBuiltin(expr.Name); builtin != nil {
+		if builtin := runtime.LookupBuiltin(expr.Name); builtin != nil {
 			return builtin, nil
 		}
 		sym, _ := scope.Lookup(expr.Name)
@@ -810,19 +811,19 @@ func (r *resolver) resolveGoTypeExpr(scope *Scope, expr goast.Expr) (semaTypes.T
 			return nil, err
 		}
 		if expr.Len == nil {
-			return &semaTypes.SliceType{Elem: elem}, nil
+			return &runtime.SliceType{Elem: elem}, nil
 		}
 		length, err := r.goArrayLenValue(scope, expr.Len)
 		if err != nil {
 			return nil, err
 		}
-		return &semaTypes.ArrayType{Len: length, Elem: elem}, nil
+		return &runtime.ArrayType{Len: length, Elem: elem}, nil
 	case *goast.StarExpr:
 		base, err := r.resolveGoTypeExpr(scope, expr.X)
 		if err != nil {
 			return nil, err
 		}
-		return &semaTypes.PointerType{Base: base}, nil
+		return &runtime.PointerType{Base: base}, nil
 	case *goast.MapType:
 		key, err := r.resolveGoTypeExpr(scope, expr.Key)
 		if err != nil {
@@ -832,15 +833,15 @@ func (r *resolver) resolveGoTypeExpr(scope *Scope, expr goast.Expr) (semaTypes.T
 		if err != nil {
 			return nil, err
 		}
-		return &semaTypes.MapType{Key: key, Value: value}, nil
+		return &runtime.MapType{Key: key, Value: value}, nil
 	case *goast.Ellipsis:
 		elem, err := r.resolveGoTypeExpr(scope, expr.Elt)
 		if err != nil {
 			return nil, err
 		}
-		return &semaTypes.SliceType{Elem: elem}, nil
+		return &runtime.SliceType{Elem: elem}, nil
 	case *goast.StructType:
-		fields := make([]semaTypes.Type, 0)
+		fields := make([]runtime.ScriptType, 0)
 		names := make([]string, 0)
 		for _, field := range expr.Fields.List {
 			fieldType, err := r.resolveGoTypeExpr(scope, field.Type)
@@ -857,9 +858,9 @@ func (r *resolver) resolveGoTypeExpr(scope *Scope, expr goast.Expr) (semaTypes.T
 				names = append(names, name.Name)
 			}
 		}
-		return &semaTypes.StructType{FieldNames: names, Fields: fields}, nil
+		return &runtime.StructType{FieldNames: names, Fields: fields}, nil
 	case *goast.FuncType:
-		params := make([]semaTypes.Type, 0)
+		params := make([]runtime.ScriptType, 0)
 		variadic := false
 		if expr.Params != nil {
 			for i, field := range expr.Params.List {
@@ -879,7 +880,7 @@ func (r *resolver) resolveGoTypeExpr(scope *Scope, expr goast.Expr) (semaTypes.T
 				}
 			}
 		}
-		results := make([]semaTypes.Type, 0)
+		results := make([]runtime.ScriptType, 0)
 		if expr.Results != nil {
 			for _, field := range expr.Results.List {
 				fieldType, err := r.resolveGoTypeExpr(scope, field.Type)
@@ -895,7 +896,7 @@ func (r *resolver) resolveGoTypeExpr(scope *Scope, expr goast.Expr) (semaTypes.T
 				}
 			}
 		}
-		return &semaTypes.FuncType{Params: params, Results: results, Variadic: variadic}, nil
+		return &runtime.FuncType{Params: params, Results: results, Variadic: variadic}, nil
 	case *goast.SelectorExpr:
 		if ident, ok := expr.X.(*goast.Ident); ok {
 			sym := r.resolveGoPkgSelector(scope, ident.Name, expr.Sel.Name)
@@ -1005,7 +1006,7 @@ func (r *resolver) resolveGoExpr(scope *Scope, expr goast.Expr) (err error) {
 		if err != nil || orig == nil {
 			return
 		}
-		if typ := r.inferGoExprType(scope, orig); typ != nil && !semaTypes.IsInvalid(typ) {
+		if typ := r.inferGoExprType(scope, orig); typ != nil && !runtime.IsInvalid(typ) {
 			r.info.Types[orig] = typ
 		}
 	}()
@@ -1192,44 +1193,44 @@ func (r *resolver) resolveGoFuncLit(outer *Scope, lit *goast.FuncLit) error {
 	return r.resolveGoBlockInScope(funcScope, lit.Body)
 }
 
-func (r *resolver) inferGoExprType(scope *Scope, expr goast.Expr) semaTypes.Type {
+func (r *resolver) inferGoExprType(scope *Scope, expr goast.Expr) runtime.ScriptType {
 	switch expr := expr.(type) {
 	case nil:
-		return semaTypes.InvalidType
+		return runtime.BuiltinInvalidType
 	case *goast.BasicLit:
 		switch expr.Kind {
 		case gotoken.STRING:
-			return semaTypes.StringType
+			return runtime.BuiltinStringType
 		case gotoken.FLOAT:
-			return semaTypes.Float64Type
+			return runtime.BuiltinFloat64Type
 		default:
-			return semaTypes.IntType
+			return runtime.BuiltinIntType
 		}
 	case *goast.Ident:
 		if expr.Name == "nil" {
-			return semaTypes.NilType
+			return runtime.BuiltinNilType
 		}
 		sym, _ := scope.Lookup(expr.Name)
 		if sym == nil || sym.Type == nil {
-			return semaTypes.InvalidType
+			return runtime.BuiltinInvalidType
 		}
 		return sym.Type
 	case *goast.FuncLit:
 		if expr.Type == nil {
-			return semaTypes.InvalidType
+			return runtime.BuiltinInvalidType
 		}
 		typ, err := r.resolveGoTypeExpr(scope, expr.Type)
 		if err != nil {
-			return semaTypes.InvalidType
+			return runtime.BuiltinInvalidType
 		}
 		return typ
 	case *goast.CompositeLit:
 		if expr.Type == nil {
-			return semaTypes.InvalidType
+			return runtime.BuiltinInvalidType
 		}
 		typ, err := r.resolveGoTypeExpr(scope, expr.Type)
 		if err != nil {
-			return semaTypes.InvalidType
+			return runtime.BuiltinInvalidType
 		}
 		return typ
 	case *goast.SelectorExpr:
@@ -1239,49 +1240,49 @@ func (r *resolver) inferGoExprType(scope *Scope, expr goast.Expr) semaTypes.Type
 			}
 		}
 		baseType := r.inferGoExprType(scope, expr.X)
-		if methodType, ok := semaTypes.LookupMethod(baseType, expr.Sel.Name); ok {
+		if methodType, ok := runtime.LookupMethod(baseType, expr.Sel.Name); ok {
 			return methodType
 		}
 		strct, _, ok := structTypeForSelector(baseType)
 		if !ok || strct == nil {
-			return semaTypes.InvalidType
+			return runtime.BuiltinInvalidType
 		}
 		for i, name := range strct.FieldNames {
 			if name == expr.Sel.Name {
 				return strct.Fields[i]
 			}
 		}
-		return semaTypes.InvalidType
+		return runtime.BuiltinInvalidType
 	case *goast.IndexExpr:
 		baseType := r.inferGoExprType(scope, expr.X)
-		switch t := semaTypes.Underlying(baseType).(type) {
-		case *semaTypes.ArrayType:
+		switch t := runtime.Underlying(baseType).(type) {
+		case *runtime.ArrayType:
 			return t.Elem
-		case *semaTypes.SliceType:
+		case *runtime.SliceType:
 			return t.Elem
-		case *semaTypes.MapType:
+		case *runtime.MapType:
 			return t.Value
 		default:
-			return semaTypes.InvalidType
+			return runtime.BuiltinInvalidType
 		}
 	case *goast.SliceExpr:
 		baseType := r.inferGoExprType(scope, expr.X)
-		switch t := semaTypes.Underlying(baseType).(type) {
-		case *semaTypes.ArrayType:
-			return &semaTypes.SliceType{Elem: t.Elem}
-		case *semaTypes.SliceType:
-			return &semaTypes.SliceType{Elem: t.Elem}
-		case *semaTypes.BasicType:
-			if semaTypes.Identical(t, semaTypes.StringType) && expr.Max == nil {
-				return semaTypes.StringType
+		switch t := runtime.Underlying(baseType).(type) {
+		case *runtime.ArrayType:
+			return &runtime.SliceType{Elem: t.Elem}
+		case *runtime.SliceType:
+			return &runtime.SliceType{Elem: t.Elem}
+		case *runtime.BasicType:
+			if runtime.Identical(t, runtime.BuiltinStringType) && expr.Max == nil {
+				return runtime.BuiltinStringType
 			}
-			return semaTypes.InvalidType
+			return runtime.BuiltinInvalidType
 		default:
-			return semaTypes.InvalidType
+			return runtime.BuiltinInvalidType
 		}
 	case *goast.CallExpr:
 		if ident, ok := expr.Fun.(*goast.Ident); ok {
-			if builtin := semaTypes.LookupBuiltin(ident.Name); builtin != nil {
+			if builtin := runtime.LookupBuiltin(ident.Name); builtin != nil {
 				return builtin
 			}
 			switch ident.Name {
@@ -1292,44 +1293,44 @@ func (r *resolver) inferGoExprType(scope *Scope, expr goast.Expr) semaTypes.Type
 						return typ
 					}
 				}
-				return semaTypes.InvalidType
+				return runtime.BuiltinInvalidType
 			case "append":
 				if len(expr.Args) >= 1 {
 					return r.inferGoExprType(scope, expr.Args[0])
 				}
-				return semaTypes.InvalidType
+				return runtime.BuiltinInvalidType
 			case "len":
-				return semaTypes.IntType
+				return runtime.BuiltinIntType
 			case "clear":
-				return semaTypes.IntType
+				return runtime.BuiltinIntType
 			}
 			if sig, ok := r.hostFunctions[ident.Name]; ok {
 				if len(sig.Results) == 1 {
 					return sig.Results[0]
 				}
-				return semaTypes.InvalidType
+				return runtime.BuiltinInvalidType
 			}
 			if sym, _ := scope.Lookup(ident.Name); sym != nil && sym.Kind == SymType {
 				return sym.Type
 			}
 		}
 		funType := r.inferGoExprType(scope, expr.Fun)
-		if sig, ok := semaTypes.Underlying(funType).(*semaTypes.FuncType); ok && len(sig.Results) == 1 {
+		if sig, ok := runtime.Underlying(funType).(*runtime.FuncType); ok && len(sig.Results) == 1 {
 			return sig.Results[0]
 		}
-		return semaTypes.InvalidType
+		return runtime.BuiltinInvalidType
 	case *goast.UnaryExpr:
 		xType := r.inferGoExprType(scope, expr.X)
 		switch expr.Op {
 		case gotoken.NOT:
-			return semaTypes.BoolType
+			return runtime.BuiltinBoolType
 		case gotoken.AND:
-			return &semaTypes.PointerType{Base: xType}
+			return &runtime.PointerType{Base: xType}
 		case gotoken.MUL:
-			if ptr, ok := semaTypes.Underlying(xType).(*semaTypes.PointerType); ok && ptr != nil {
+			if ptr, ok := runtime.Underlying(xType).(*runtime.PointerType); ok && ptr != nil {
 				return ptr.Base
 			}
-			return semaTypes.InvalidType
+			return runtime.BuiltinInvalidType
 		default:
 			return xType
 		}
@@ -1338,10 +1339,10 @@ func (r *resolver) inferGoExprType(scope *Scope, expr goast.Expr) semaTypes.Type
 		right := r.inferGoExprType(scope, expr.Y)
 		switch expr.Op {
 		case gotoken.LAND, gotoken.LOR, gotoken.EQL, gotoken.NEQ, gotoken.LSS, gotoken.LEQ, gotoken.GTR, gotoken.GEQ:
-			return semaTypes.BoolType
+			return runtime.BuiltinBoolType
 		case gotoken.ADD:
-			if semaTypes.IsString(left) && semaTypes.IsString(right) {
-				return semaTypes.StringType
+			if runtime.IsString(left) && runtime.IsString(right) {
+				return runtime.BuiltinStringType
 			}
 			return commonGoNumericType(left, right)
 		case gotoken.SUB, gotoken.MUL, gotoken.QUO:
@@ -1350,33 +1351,33 @@ func (r *resolver) inferGoExprType(scope *Scope, expr goast.Expr) semaTypes.Type
 			return left
 		}
 	default:
-		return semaTypes.InvalidType
+		return runtime.BuiltinInvalidType
 	}
 }
 
-func (r *resolver) inferGoExprTypes(scope *Scope, expr goast.Expr) []semaTypes.Type {
+func (r *resolver) inferGoExprTypes(scope *Scope, expr goast.Expr) []runtime.ScriptType {
 	if index, ok := expr.(*goast.IndexExpr); ok {
 		baseType := r.inferGoExprType(scope, index.X)
-		if mapType, ok := semaTypes.Underlying(baseType).(*semaTypes.MapType); ok && mapType != nil {
-			return []semaTypes.Type{mapType.Value, semaTypes.BoolType}
+		if mapType, ok := runtime.Underlying(baseType).(*runtime.MapType); ok && mapType != nil {
+			return []runtime.ScriptType{mapType.Value, runtime.BuiltinBoolType}
 		}
 	}
 	if call, ok := expr.(*goast.CallExpr); ok {
 		if ident, ok := call.Fun.(*goast.Ident); ok {
 			if sig, ok := r.hostFunctions[ident.Name]; ok && len(sig.Results) > 0 {
-				return append([]semaTypes.Type(nil), sig.Results...)
+				return append([]runtime.ScriptType(nil), sig.Results...)
 			}
 		}
 		funType := r.inferGoExprType(scope, call.Fun)
-		if sig, ok := semaTypes.Underlying(funType).(*semaTypes.FuncType); ok && len(sig.Results) > 0 {
-			return append([]semaTypes.Type(nil), sig.Results...)
+		if sig, ok := runtime.Underlying(funType).(*runtime.FuncType); ok && len(sig.Results) > 0 {
+			return append([]runtime.ScriptType(nil), sig.Results...)
 		}
 	}
 	typ := r.inferGoExprType(scope, expr)
 	if typ == nil {
 		return nil
 	}
-	return []semaTypes.Type{typ}
+	return []runtime.ScriptType{typ}
 }
 
 func validateGoTypeCycles(scope *Scope) error {
@@ -1387,7 +1388,7 @@ func validateGoTypeCycles(scope *Scope) error {
 		if sym == nil || sym.Kind != SymType {
 			continue
 		}
-		named, ok := sym.Type.(*semaTypes.NamedType)
+		named, ok := sym.Type.(*runtime.NamedType)
 		if !ok || named == nil {
 			continue
 		}
@@ -1398,28 +1399,28 @@ func validateGoTypeCycles(scope *Scope) error {
 	return nil
 }
 
-func validateGoNamedType(named *semaTypes.NamedType) error {
+func validateGoNamedType(named *runtime.NamedType) error {
 	if named == nil {
 		return nil
 	}
 	switch t := named.Underlying.(type) {
-	case *semaTypes.PointerType:
-		if goTypeReferencesNamed(t.Base, named, make(map[semaTypes.Type]struct{})) {
+	case *runtime.PointerType:
+		if goTypeReferencesNamed(t.Base, named, make(map[runtime.ScriptType]struct{})) {
 			return fmt.Errorf("sema: type cycle detected involving %s", named.Name)
 		}
-	case *semaTypes.SliceType:
-		if goTypeReferencesNamed(t.Elem, named, make(map[semaTypes.Type]struct{})) {
+	case *runtime.SliceType:
+		if goTypeReferencesNamed(t.Elem, named, make(map[runtime.ScriptType]struct{})) {
 			return fmt.Errorf("sema: type cycle detected involving %s", named.Name)
 		}
 	}
-	seen := make(map[*semaTypes.NamedType]struct{})
+	seen := make(map[*runtime.NamedType]struct{})
 	if goNamedTypeHasCycle(named, seen) {
 		return fmt.Errorf("sema: type cycle detected involving %s", named.Name)
 	}
 	return nil
 }
 
-func goNamedTypeHasCycle(named *semaTypes.NamedType, path map[*semaTypes.NamedType]struct{}) bool {
+func goNamedTypeHasCycle(named *runtime.NamedType, path map[*runtime.NamedType]struct{}) bool {
 	if named == nil {
 		return false
 	}
@@ -1431,15 +1432,15 @@ func goNamedTypeHasCycle(named *semaTypes.NamedType, path map[*semaTypes.NamedTy
 	return goTypeHasCycle(named.Underlying, path)
 }
 
-func goTypeHasCycle(t semaTypes.Type, path map[*semaTypes.NamedType]struct{}) bool {
+func goTypeHasCycle(t runtime.ScriptType, path map[*runtime.NamedType]struct{}) bool {
 	switch t := t.(type) {
 	case nil:
 		return false
-	case *semaTypes.NamedType:
+	case *runtime.NamedType:
 		return goNamedTypeHasCycle(t, path)
-	case *semaTypes.ArrayType:
+	case *runtime.ArrayType:
 		return goTypeHasCycle(t.Elem, path)
-	case *semaTypes.StructType:
+	case *runtime.StructType:
 		for _, field := range t.Fields {
 			if goTypeHasCycle(field, path) {
 				return true
@@ -1451,7 +1452,7 @@ func goTypeHasCycle(t semaTypes.Type, path map[*semaTypes.NamedType]struct{}) bo
 	}
 }
 
-func goTypeReferencesNamed(t semaTypes.Type, want *semaTypes.NamedType, seen map[semaTypes.Type]struct{}) bool {
+func goTypeReferencesNamed(t runtime.ScriptType, want *runtime.NamedType, seen map[runtime.ScriptType]struct{}) bool {
 	if t == nil || want == nil {
 		return false
 	}
@@ -1460,27 +1461,27 @@ func goTypeReferencesNamed(t semaTypes.Type, want *semaTypes.NamedType, seen map
 	}
 	seen[t] = struct{}{}
 	switch t := t.(type) {
-	case *semaTypes.NamedType:
+	case *runtime.NamedType:
 		if t == want {
 			return true
 		}
 		return goTypeReferencesNamed(t.Underlying, want, seen)
-	case *semaTypes.ArrayType:
+	case *runtime.ArrayType:
 		return goTypeReferencesNamed(t.Elem, want, seen)
-	case *semaTypes.SliceType:
+	case *runtime.SliceType:
 		return goTypeReferencesNamed(t.Elem, want, seen)
-	case *semaTypes.MapType:
+	case *runtime.MapType:
 		return goTypeReferencesNamed(t.Key, want, seen) || goTypeReferencesNamed(t.Value, want, seen)
-	case *semaTypes.StructType:
+	case *runtime.StructType:
 		for _, field := range t.Fields {
 			if goTypeReferencesNamed(field, want, seen) {
 				return true
 			}
 		}
 		return false
-	case *semaTypes.PointerType:
+	case *runtime.PointerType:
 		return goTypeReferencesNamed(t.Base, want, seen)
-	case *semaTypes.FuncType:
+	case *runtime.FuncType:
 		for _, param := range t.Params {
 			if goTypeReferencesNamed(param, want, seen) {
 				return true
@@ -1497,12 +1498,12 @@ func goTypeReferencesNamed(t semaTypes.Type, want *semaTypes.NamedType, seen map
 	}
 }
 
-func resolveGoReceiverNamedType(t semaTypes.Type) (*semaTypes.NamedType, bool, error) {
+func resolveGoReceiverNamedType(t runtime.ScriptType) (*runtime.NamedType, bool, error) {
 	switch t := t.(type) {
-	case *semaTypes.NamedType:
+	case *runtime.NamedType:
 		return t, false, nil
-	case *semaTypes.PointerType:
-		if named, ok := t.Base.(*semaTypes.NamedType); ok {
+	case *runtime.PointerType:
+		if named, ok := t.Base.(*runtime.NamedType); ok {
 			return named, true, nil
 		}
 	}
@@ -1510,7 +1511,7 @@ func resolveGoReceiverNamedType(t semaTypes.Type) (*semaTypes.NamedType, bool, e
 }
 
 func isGoTypeName(scope *Scope, name string) bool {
-	if semaTypes.LookupBuiltin(name) != nil {
+	if runtime.LookupBuiltin(name) != nil {
 		return true
 	}
 	sym, _ := scope.Lookup(name)

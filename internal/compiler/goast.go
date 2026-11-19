@@ -10,12 +10,11 @@ import (
 	"goes/internal/bytecode"
 	"goes/internal/sema"
 	"goes/runtime"
-	semaTypes "goes/types"
 )
 
 type directGoPackageVar struct {
 	name string
-	typ  semaTypes.Type
+	typ  runtime.ScriptType
 	expr goast.Expr
 }
 
@@ -32,29 +31,29 @@ func compileDirectGoFiles(checked *sema.Checked, opts CompileOptions) (*bytecode
 	methods := make([]directGoMethodDecl, 0)
 	packageVars := make([]directGoPackageVar, 0)
 	declaredFuncs := make(map[string]struct{})
-	declaredTypes := make(map[string]semaTypes.Type)
+	declaredTypes := make(map[string]runtime.ScriptType)
 	if opts.HostRegistry != nil {
 		for name, schema := range opts.HostRegistry.Types() {
-			fields := make([]semaTypes.Type, len(schema.FieldKinds))
+			fields := make([]runtime.ScriptType, len(schema.FieldKinds))
 			for i, kind := range schema.FieldKinds {
 				switch kind {
 				case runtime.Bool:
-					fields[i] = semaTypes.BoolType
+					fields[i] = runtime.BuiltinBoolType
 				case runtime.Int:
-					fields[i] = semaTypes.IntType
+					fields[i] = runtime.BuiltinIntType
 				case runtime.Int64:
-					fields[i] = semaTypes.Int64Type
+					fields[i] = runtime.BuiltinInt64Type
 				case runtime.Float64:
-					fields[i] = semaTypes.Float64Type
+					fields[i] = runtime.BuiltinFloat64Type
 				case runtime.String:
-					fields[i] = semaTypes.StringType
+					fields[i] = runtime.BuiltinStringType
 				default:
-					fields[i] = semaTypes.InvalidType
+					fields[i] = runtime.BuiltinInvalidType
 				}
 			}
-			declaredTypes[name] = &semaTypes.NamedType{
+			declaredTypes[name] = &runtime.NamedType{
 				Name: name,
-				Underlying: &semaTypes.StructType{
+				Underlying: &runtime.StructType{
 					FieldNames: append([]string(nil), schema.FieldNames...),
 					Fields:     fields,
 				},
@@ -155,8 +154,8 @@ func compileDirectGoFiles(checked *sema.Checked, opts CompileOptions) (*bytecode
 	c.collectHostFunctions()
 	for name, typ := range declaredTypes {
 		c.types[name] = typ
-		if named, ok := typ.(*semaTypes.NamedType); ok {
-			if strct, ok := semaTypes.Underlying(named).(*semaTypes.StructType); ok {
+		if named, ok := typ.(*runtime.NamedType); ok {
+			if strct, ok := runtime.Underlying(named).(*runtime.StructType); ok {
 				schema, err := structSchemaForNamed(named.Name, strct)
 				if err != nil {
 					return nil, false, err
@@ -235,7 +234,7 @@ func directGoReceiverName(expr goast.Expr) (string, bool) {
 	}
 }
 
-func supportsDirectGoFunc(facts *sema.Facts, declaredFuncs map[string]struct{}, declaredTypes map[string]semaTypes.Type, decl *goast.FuncDecl) bool {
+func supportsDirectGoFunc(facts *sema.Facts, declaredFuncs map[string]struct{}, declaredTypes map[string]runtime.ScriptType, decl *goast.FuncDecl) bool {
 	if decl == nil || decl.Name == nil || decl.Type == nil || decl.Body == nil {
 		return false
 	}
@@ -270,7 +269,7 @@ func supportsDirectGoFunc(facts *sema.Facts, declaredFuncs map[string]struct{}, 
 	return true
 }
 
-func supportsDirectGoMethod(facts *sema.Facts, declaredFuncs map[string]struct{}, declaredTypes map[string]semaTypes.Type, decl *goast.FuncDecl) bool {
+func supportsDirectGoMethod(facts *sema.Facts, declaredFuncs map[string]struct{}, declaredTypes map[string]runtime.ScriptType, decl *goast.FuncDecl) bool {
 	if decl == nil || decl.Recv == nil || len(decl.Recv.List) != 1 || len(decl.Recv.List[0].Names) != 1 {
 		return false
 	}
@@ -284,12 +283,12 @@ func supportsDirectGoMethod(facts *sema.Facts, declaredFuncs map[string]struct{}
 	})
 }
 
-func isDirectGoLocalType(expr goast.Expr, declaredTypes map[string]semaTypes.Type) bool {
+func isDirectGoLocalType(expr goast.Expr, declaredTypes map[string]runtime.ScriptType) bool {
 	_, err := directGoTypeForNamed(expr, declaredTypes)
 	return err == nil
 }
 
-func isDirectGoScopedType(facts *sema.Facts, expr goast.Expr, declaredTypes map[string]semaTypes.Type) bool {
+func isDirectGoScopedType(facts *sema.Facts, expr goast.Expr, declaredTypes map[string]runtime.ScriptType) bool {
 	if isDirectGoLocalType(expr, declaredTypes) {
 		return true
 	}
@@ -301,7 +300,7 @@ func isDirectGoScopedType(facts *sema.Facts, expr goast.Expr, declaredTypes map[
 	return binding != nil && binding.Kind == sema.SymType
 }
 
-func supportsDirectGoStmt(facts *sema.Facts, declaredFuncs map[string]struct{}, declaredTypes map[string]semaTypes.Type, stmt goast.Stmt) bool {
+func supportsDirectGoStmt(facts *sema.Facts, declaredFuncs map[string]struct{}, declaredTypes map[string]runtime.ScriptType, stmt goast.Stmt) bool {
 	switch stmt := stmt.(type) {
 	case *goast.AssignStmt:
 		if len(stmt.Lhs) > 1 {
@@ -343,7 +342,7 @@ func supportsDirectGoStmt(facts *sema.Facts, declaredFuncs map[string]struct{}, 
 				return false
 			}
 			if stmt.Tok == gotoken.ADD_ASSIGN {
-				if !semaTypes.Identical(selection.Type, semaTypes.IntType) {
+				if !runtime.Identical(selection.Type, runtime.BuiltinIntType) {
 					return false
 				}
 				if _, ok := lhs.X.(*goast.Ident); !ok {
@@ -364,7 +363,7 @@ func supportsDirectGoStmt(facts *sema.Facts, declaredFuncs map[string]struct{}, 
 			}
 		case *goast.IndexExpr:
 			baseType := directGoFactOrExprType(facts, lhs.X)
-			if _, ok := semaTypes.Underlying(baseType).(*semaTypes.MapType); ok {
+			if _, ok := runtime.Underlying(baseType).(*runtime.MapType); ok {
 				return stmt.Tok == gotoken.ASSIGN || stmt.Tok == gotoken.ADD_ASSIGN
 			}
 			if stmt.Tok != gotoken.ADD_ASSIGN &&
@@ -381,16 +380,16 @@ func supportsDirectGoStmt(facts *sema.Facts, declaredFuncs map[string]struct{}, 
 				stmt.Tok != gotoken.SHR_ASSIGN {
 				return false
 			}
-			var elemType semaTypes.Type
-			switch t := semaTypes.Underlying(baseType).(type) {
-			case *semaTypes.ArrayType:
+			var elemType runtime.ScriptType
+			switch t := runtime.Underlying(baseType).(type) {
+			case *runtime.ArrayType:
 				elemType = t.Elem
-			case *semaTypes.SliceType:
+			case *runtime.SliceType:
 				elemType = t.Elem
 			default:
 				return false
 			}
-			if stmt.Tok == gotoken.ADD_ASSIGN && !semaTypes.Identical(elemType, semaTypes.IntType) {
+			if stmt.Tok == gotoken.ADD_ASSIGN && !runtime.Identical(elemType, runtime.BuiltinIntType) {
 				return false
 			}
 			if stmt.Tok == gotoken.ADD_ASSIGN && func() bool { _, ok := lhs.X.(*goast.Ident); return ok }() == false {
@@ -414,8 +413,8 @@ func supportsDirectGoStmt(facts *sema.Facts, declaredFuncs map[string]struct{}, 
 			return target.Name != "_" && (stmt.Tok == gotoken.INC || stmt.Tok == gotoken.DEC)
 		case *goast.IndexExpr:
 			baseType := directGoFactOrExprType(facts, target.X)
-			switch semaTypes.Underlying(baseType).(type) {
-			case *semaTypes.MapType, *semaTypes.ArrayType:
+			switch runtime.Underlying(baseType).(type) {
+			case *runtime.MapType, *runtime.ArrayType:
 				return stmt.Tok == gotoken.INC || stmt.Tok == gotoken.DEC
 			default:
 				return false
@@ -547,7 +546,7 @@ func supportsDirectGoStmt(facts *sema.Facts, declaredFuncs map[string]struct{}, 
 	}
 }
 
-func supportsDirectGoDecl(facts *sema.Facts, declaredFuncs map[string]struct{}, declaredTypes map[string]semaTypes.Type, decl goast.Decl) bool {
+func supportsDirectGoDecl(facts *sema.Facts, declaredFuncs map[string]struct{}, declaredTypes map[string]runtime.ScriptType, decl goast.Decl) bool {
 	gen, ok := decl.(*goast.GenDecl)
 	if !ok {
 		return false
@@ -592,11 +591,11 @@ func supportsDirectGoDecl(facts *sema.Facts, declaredFuncs map[string]struct{}, 
 	return true
 }
 
-func collectDirectGoSimpleTypes(decl *goast.GenDecl) (map[string]semaTypes.Type, bool) {
+func collectDirectGoSimpleTypes(decl *goast.GenDecl) (map[string]runtime.ScriptType, bool) {
 	if decl == nil || decl.Tok != gotoken.TYPE {
 		return nil, false
 	}
-	types := make(map[string]semaTypes.Type, len(decl.Specs))
+	types := make(map[string]runtime.ScriptType, len(decl.Specs))
 	for _, spec := range decl.Specs {
 		typeSpec, ok := spec.(*goast.TypeSpec)
 		if !ok || typeSpec.Name == nil || typeSpec.Name.Name == "_" {
@@ -606,12 +605,12 @@ func collectDirectGoSimpleTypes(decl *goast.GenDecl) (map[string]semaTypes.Type,
 		if err != nil {
 			return nil, false
 		}
-		types[typeSpec.Name.Name] = &semaTypes.NamedType{Name: typeSpec.Name.Name, Underlying: underlying}
+		types[typeSpec.Name.Name] = &runtime.NamedType{Name: typeSpec.Name.Name, Underlying: underlying}
 	}
 	return types, true
 }
 
-func directGoUnderlyingType(expr goast.Expr) (semaTypes.Type, error) {
+func directGoUnderlyingType(expr goast.Expr) (runtime.ScriptType, error) {
 	if typ, err := directGoType(expr); err == nil {
 		return typ, nil
 	}
@@ -620,7 +619,7 @@ func directGoUnderlyingType(expr goast.Expr) (semaTypes.Type, error) {
 		return nil, fmt.Errorf("compiler: direct go/ast type %T is not supported", expr)
 	}
 	fieldNames := make([]string, 0)
-	fields := make([]semaTypes.Type, 0)
+	fields := make([]runtime.ScriptType, 0)
 	for _, field := range strct.Fields.List {
 		if field == nil || field.Type == nil || len(field.Names) == 0 {
 			return nil, fmt.Errorf("compiler: direct go/ast struct field is not supported")
@@ -634,10 +633,10 @@ func directGoUnderlyingType(expr goast.Expr) (semaTypes.Type, error) {
 			fields = append(fields, fieldType)
 		}
 	}
-	return &semaTypes.StructType{FieldNames: fieldNames, Fields: fields}, nil
+	return &runtime.StructType{FieldNames: fieldNames, Fields: fields}, nil
 }
 
-func supportsDirectGoPackageVars(facts *sema.Facts, declaredFuncs map[string]struct{}, declaredTypes map[string]semaTypes.Type, decl *goast.GenDecl) ([]directGoPackageVar, bool) {
+func supportsDirectGoPackageVars(facts *sema.Facts, declaredFuncs map[string]struct{}, declaredTypes map[string]runtime.ScriptType, decl *goast.GenDecl) ([]directGoPackageVar, bool) {
 	if decl == nil || decl.Tok != gotoken.VAR {
 		return nil, false
 	}
@@ -699,7 +698,7 @@ func supportsDirectGoPackageConsts(facts *sema.Facts, declaredFuncs map[string]s
 	return true
 }
 
-func isDirectGoPackageType(expr goast.Expr, declaredTypes map[string]semaTypes.Type) bool {
+func isDirectGoPackageType(expr goast.Expr, declaredTypes map[string]runtime.ScriptType) bool {
 	_, err := directGoTypeForNamed(expr, declaredTypes)
 	return err == nil
 }
@@ -817,11 +816,11 @@ func supportsDirectGoExpr(facts *sema.Facts, declaredFuncs map[string]struct{}, 
 	case *goast.FuncLit:
 		return expr.Type != nil && expr.Body != nil
 	case *goast.CompositeLit:
-		var typ semaTypes.Type
+		var typ runtime.ScriptType
 		if facts != nil && facts.Types != nil {
 			typ = facts.Types[expr]
 		}
-		_, isStruct := semaTypes.Underlying(typ).(*semaTypes.StructType)
+		_, isStruct := runtime.Underlying(typ).(*runtime.StructType)
 		for _, elt := range expr.Elts {
 			if kv, ok := elt.(*goast.KeyValueExpr); ok {
 				if !isStruct {
@@ -882,10 +881,10 @@ func (c *compiler) compileDirectGoFunc(index int, decl *goast.FuncDecl) error {
 		functionIndex: index,
 		function:      &c.program.Functions[index],
 		scope:         newScope(nil),
-		slotTypes:     make(map[int]semaTypes.Type),
+		slotTypes:     make(map[int]runtime.ScriptType),
 		resultTypes:   resultTypes,
 		captureSlots:  make(map[string]int),
-		captureTypes:  make(map[int]semaTypes.Type),
+		captureTypes:  make(map[int]runtime.ScriptType),
 	}
 	params, err := fc.declareDirectGoParams(decl.Type.Params)
 	if err != nil {
@@ -919,10 +918,10 @@ func (c *compiler) compileDirectGoMethod(index int, recvName string, decl *goast
 		functionIndex: index,
 		function:      &c.program.Functions[index],
 		scope:         newScope(nil),
-		slotTypes:     make(map[int]semaTypes.Type),
+		slotTypes:     make(map[int]runtime.ScriptType),
 		resultTypes:   resultTypes,
 		captureSlots:  make(map[string]int),
-		captureTypes:  make(map[int]semaTypes.Type),
+		captureTypes:  make(map[int]runtime.ScriptType),
 	}
 	recvField := decl.Recv.List[0]
 	recvType, err := directGoTypeForNamed(recvField.Type, c.types)
@@ -972,10 +971,10 @@ func (c *compiler) compileDirectGoFuncLit(parent *funcCompiler, lit *goast.FuncL
 		functionIndex: index,
 		function:      &c.program.Functions[index],
 		scope:         newScope(nil),
-		slotTypes:     make(map[int]semaTypes.Type),
+		slotTypes:     make(map[int]runtime.ScriptType),
 		resultTypes:   resultTypes,
 		captureSlots:  make(map[string]int),
-		captureTypes:  make(map[int]semaTypes.Type),
+		captureTypes:  make(map[int]runtime.ScriptType),
 	}
 	params, err := fc.declareDirectGoParams(lit.Type.Params)
 	if err != nil {
@@ -1061,11 +1060,11 @@ func directGoFieldCount(fields *goast.FieldList) int {
 	return count
 }
 
-func directGoFieldTypesForNamed(fields *goast.FieldList, namedTypes map[string]semaTypes.Type) ([]semaTypes.Type, error) {
+func directGoFieldTypesForNamed(fields *goast.FieldList, namedTypes map[string]runtime.ScriptType) ([]runtime.ScriptType, error) {
 	if fields == nil {
 		return nil, nil
 	}
-	types := make([]semaTypes.Type, 0, directGoFieldCount(fields))
+	types := make([]runtime.ScriptType, 0, directGoFieldCount(fields))
 	for _, field := range fields.List {
 		typ, err := directGoTypeForNamed(field.Type, namedTypes)
 		if err != nil {
@@ -1090,20 +1089,20 @@ func directGoFieldListVariadic(fields *goast.FieldList) bool {
 	return ok
 }
 
-func directGoType(expr goast.Expr) (semaTypes.Type, error) {
+func directGoType(expr goast.Expr) (runtime.ScriptType, error) {
 	if ellipsis, ok := expr.(*goast.Ellipsis); ok {
 		elem, err := directGoType(ellipsis.Elt)
 		if err != nil {
 			return nil, err
 		}
-		return &semaTypes.SliceType{Elem: elem}, nil
+		return &runtime.SliceType{Elem: elem}, nil
 	}
 	if star, ok := expr.(*goast.StarExpr); ok {
 		base, err := directGoType(star.X)
 		if err != nil {
 			return nil, err
 		}
-		return &semaTypes.PointerType{Base: base}, nil
+		return &runtime.PointerType{Base: base}, nil
 	}
 	if array, ok := expr.(*goast.ArrayType); ok {
 		elem, err := directGoType(array.Elt)
@@ -1111,7 +1110,7 @@ func directGoType(expr goast.Expr) (semaTypes.Type, error) {
 			return nil, err
 		}
 		if array.Len == nil {
-			return &semaTypes.SliceType{Elem: elem}, nil
+			return &runtime.SliceType{Elem: elem}, nil
 		}
 		lit, ok := array.Len.(*goast.BasicLit)
 		if !ok {
@@ -1121,7 +1120,7 @@ func directGoType(expr goast.Expr) (semaTypes.Type, error) {
 		if err != nil {
 			return nil, fmt.Errorf("compiler: invalid array length %q: %w", lit.Value, err)
 		}
-		return &semaTypes.ArrayType{Len: n, Elem: elem}, nil
+		return &runtime.ArrayType{Len: n, Elem: elem}, nil
 	}
 	if mp, ok := expr.(*goast.MapType); ok {
 		key, err := directGoType(mp.Key)
@@ -1132,7 +1131,7 @@ func directGoType(expr goast.Expr) (semaTypes.Type, error) {
 		if err != nil {
 			return nil, err
 		}
-		return &semaTypes.MapType{Key: key, Value: value}, nil
+		return &runtime.MapType{Key: key, Value: value}, nil
 	}
 	ident, ok := expr.(*goast.Ident)
 	if !ok {
@@ -1140,28 +1139,28 @@ func directGoType(expr goast.Expr) (semaTypes.Type, error) {
 	}
 	switch ident.Name {
 	case "int":
-		return semaTypes.IntType, nil
+		return runtime.BuiltinIntType, nil
 	case "bool":
-		return semaTypes.BoolType, nil
+		return runtime.BuiltinBoolType, nil
 	case "string":
-		return semaTypes.StringType, nil
+		return runtime.BuiltinStringType, nil
 	case "float64":
-		return semaTypes.Float64Type, nil
+		return runtime.BuiltinFloat64Type, nil
 	case "int64":
-		return semaTypes.Int64Type, nil
+		return runtime.BuiltinInt64Type, nil
 	default:
 		return nil, fmt.Errorf("compiler: direct go/ast type %q is not supported", ident.Name)
 	}
 }
 
-func directGoTypeForNamed(expr goast.Expr, namedTypes map[string]semaTypes.Type) (semaTypes.Type, error) {
+func directGoTypeForNamed(expr goast.Expr, namedTypes map[string]runtime.ScriptType) (runtime.ScriptType, error) {
 	switch expr := expr.(type) {
 	case *goast.Ellipsis:
 		elem, err := directGoTypeForNamed(expr.Elt, namedTypes)
 		if err != nil {
 			return nil, err
 		}
-		return &semaTypes.SliceType{Elem: elem}, nil
+		return &runtime.SliceType{Elem: elem}, nil
 	case *goast.Ident:
 		if typ, err := directGoType(expr); err == nil {
 			return typ, nil
@@ -1176,14 +1175,14 @@ func directGoTypeForNamed(expr goast.Expr, namedTypes map[string]semaTypes.Type)
 		if err != nil {
 			return nil, err
 		}
-		return &semaTypes.PointerType{Base: base}, nil
+		return &runtime.PointerType{Base: base}, nil
 	case *goast.ArrayType:
 		elem, err := directGoTypeForNamed(expr.Elt, namedTypes)
 		if err != nil {
 			return nil, err
 		}
 		if expr.Len == nil {
-			return &semaTypes.SliceType{Elem: elem}, nil
+			return &runtime.SliceType{Elem: elem}, nil
 		}
 		lit, ok := expr.Len.(*goast.BasicLit)
 		if !ok {
@@ -1193,7 +1192,7 @@ func directGoTypeForNamed(expr goast.Expr, namedTypes map[string]semaTypes.Type)
 		if err != nil {
 			return nil, fmt.Errorf("compiler: invalid array length %q: %w", lit.Value, err)
 		}
-		return &semaTypes.ArrayType{Len: n, Elem: elem}, nil
+		return &runtime.ArrayType{Len: n, Elem: elem}, nil
 	case *goast.MapType:
 		key, err := directGoTypeForNamed(expr.Key, namedTypes)
 		if err != nil {
@@ -1203,7 +1202,7 @@ func directGoTypeForNamed(expr goast.Expr, namedTypes map[string]semaTypes.Type)
 		if err != nil {
 			return nil, err
 		}
-		return &semaTypes.MapType{Key: key, Value: value}, nil
+		return &runtime.MapType{Key: key, Value: value}, nil
 	default:
 		return nil, fmt.Errorf("compiler: direct go/ast type %T is not supported", expr)
 	}
@@ -1269,8 +1268,8 @@ func (fc *funcCompiler) emitDirectGoStmt(stmt goast.Stmt) error {
 			return fmt.Errorf("compiler: direct go/ast assignment target %T is not supported", stmt.Lhs[0])
 		case *goast.IndexExpr:
 			baseType := directGoFactOrExprType(fc.parent.facts, lhs.X)
-			switch semaTypes.Underlying(baseType).(type) {
-			case *semaTypes.ArrayType, *semaTypes.SliceType:
+			switch runtime.Underlying(baseType).(type) {
+			case *runtime.ArrayType, *runtime.SliceType:
 				if stmt.Tok != gotoken.ASSIGN {
 					break
 				}
@@ -1284,7 +1283,7 @@ func (fc *funcCompiler) emitDirectGoStmt(stmt goast.Stmt) error {
 				fc.emit(bytecode.OpStoreIndirect, 0, 0, 0)
 				return nil
 			}
-			if mapType, ok := semaTypes.Underlying(baseType).(*semaTypes.MapType); ok {
+			if mapType, ok := runtime.Underlying(baseType).(*runtime.MapType); ok {
 				if stmt.Tok == gotoken.ASSIGN {
 					if err := fc.emitDirectGoExpr(lhs.X); err != nil {
 						return err
@@ -1349,7 +1348,7 @@ func (fc *funcCompiler) emitDirectGoStmt(stmt goast.Stmt) error {
 			return fmt.Errorf("compiler: expression statement must be a call")
 		}
 		if ident, ok := call.Fun.(*goast.Ident); ok && ident.Name == "delete" {
-			mapType, ok := semaTypes.Underlying(directGoFactOrExprType(fc.parent.facts, call.Args[0])).(*semaTypes.MapType)
+			mapType, ok := runtime.Underlying(directGoFactOrExprType(fc.parent.facts, call.Args[0])).(*runtime.MapType)
 			if !ok || mapType == nil {
 				return fmt.Errorf("compiler: delete expects a map")
 			}
@@ -1397,7 +1396,7 @@ func (fc *funcCompiler) emitDirectGoStmt(stmt goast.Stmt) error {
 			return nil
 		}
 		for i, result := range stmt.Results {
-			var expected semaTypes.Type
+			var expected runtime.ScriptType
 			if len(stmt.Results) == len(fc.resultTypes) {
 				expected = fc.resultTypes[i]
 			}
@@ -1514,11 +1513,11 @@ func (fc *funcCompiler) emitDirectGoMultiAssign(stmt *goast.AssignStmt) error {
 	return nil
 }
 
-func (fc *funcCompiler) directGoMultiAssignResultTypes(expr goast.Expr) ([]semaTypes.Type, error) {
+func (fc *funcCompiler) directGoMultiAssignResultTypes(expr goast.Expr) ([]runtime.ScriptType, error) {
 	if index, ok := expr.(*goast.IndexExpr); ok {
 		baseType := directGoFactOrExprType(fc.parent.facts, index.X)
-		if mapType, ok := semaTypes.Underlying(baseType).(*semaTypes.MapType); ok && mapType != nil {
-			return []semaTypes.Type{mapType.Value, semaTypes.BoolType}, nil
+		if mapType, ok := runtime.Underlying(baseType).(*runtime.MapType); ok && mapType != nil {
+			return []runtime.ScriptType{mapType.Value, runtime.BuiltinBoolType}, nil
 		}
 	}
 	call, ok := expr.(*goast.CallExpr)
@@ -1528,36 +1527,36 @@ func (fc *funcCompiler) directGoMultiAssignResultTypes(expr goast.Expr) ([]semaT
 	return fc.directGoCallResultTypes(call)
 }
 
-func (fc *funcCompiler) directGoCallResultTypes(call *goast.CallExpr) ([]semaTypes.Type, error) {
+func (fc *funcCompiler) directGoCallResultTypes(call *goast.CallExpr) ([]runtime.ScriptType, error) {
 	if ident, ok := call.Fun.(*goast.Ident); ok && fc.parent != nil {
 		if sig, ok := fc.parent.hostFunctions[ident.Name]; ok {
-			return append([]semaTypes.Type(nil), sig.Results...), nil
+			return append([]runtime.ScriptType(nil), sig.Results...), nil
 		}
 	}
 	funType := directGoFactOrExprType(fc.parent.facts, call.Fun)
 	if funType == nil {
 		return nil, fmt.Errorf("compiler: missing function type for call")
 	}
-	fn, ok := semaTypes.Underlying(funType).(*semaTypes.FuncType)
+	fn, ok := runtime.Underlying(funType).(*runtime.FuncType)
 	if !ok {
 		return nil, fmt.Errorf("compiler: call target is not a function")
 	}
-	return append([]semaTypes.Type(nil), fn.Results...), nil
+	return append([]runtime.ScriptType(nil), fn.Results...), nil
 }
 
-func (fc *funcCompiler) directGoFuncSignature(expr *goast.CallExpr) (*semaTypes.FuncType, error) {
+func (fc *funcCompiler) directGoFuncSignature(expr *goast.CallExpr) (*runtime.FuncType, error) {
 	funType := directGoFactOrExprType(fc.parent.facts, expr.Fun)
 	if funType == nil {
 		return nil, fmt.Errorf("compiler: missing function type for call")
 	}
-	sig, ok := semaTypes.Underlying(funType).(*semaTypes.FuncType)
+	sig, ok := runtime.Underlying(funType).(*runtime.FuncType)
 	if !ok || sig == nil {
 		return nil, fmt.Errorf("compiler: call target is not a function")
 	}
 	return sig, nil
 }
 
-func (fc *funcCompiler) directGoHostSignature(name string) (*semaTypes.HostSignature, error) {
+func (fc *funcCompiler) directGoHostSignature(name string) (*runtime.TypedHostSignature, error) {
 	if fc == nil || fc.parent == nil {
 		return nil, fmt.Errorf("compiler: missing compiler state")
 	}
@@ -1568,7 +1567,7 @@ func (fc *funcCompiler) directGoHostSignature(name string) (*semaTypes.HostSigna
 	return &sig, nil
 }
 
-func (fc *funcCompiler) emitDirectGoCallArgsForSignature(expr *goast.CallExpr, sig *semaTypes.FuncType) (int, error) {
+func (fc *funcCompiler) emitDirectGoCallArgsForSignature(expr *goast.CallExpr, sig *runtime.FuncType) (int, error) {
 	if sig == nil {
 		return 0, fmt.Errorf("compiler: missing function signature")
 	}
@@ -1587,7 +1586,7 @@ func (fc *funcCompiler) emitDirectGoCallArgsForSignature(expr *goast.CallExpr, s
 		}
 	}
 	lastParam := sig.Params[len(sig.Params)-1]
-	sliceType, ok := semaTypes.Underlying(lastParam).(*semaTypes.SliceType)
+	sliceType, ok := runtime.Underlying(lastParam).(*runtime.SliceType)
 	if !ok || sliceType == nil {
 		return 0, fmt.Errorf("compiler: variadic parameter must be a slice type")
 	}
@@ -1606,7 +1605,7 @@ func (fc *funcCompiler) emitDirectGoCallArgsForSignature(expr *goast.CallExpr, s
 	return fixedCount + 1, nil
 }
 
-func (fc *funcCompiler) emitDirectGoCallArgsForHostSignature(expr *goast.CallExpr, sig *semaTypes.HostSignature) (int, error) {
+func (fc *funcCompiler) emitDirectGoCallArgsForHostSignature(expr *goast.CallExpr, sig *runtime.TypedHostSignature) (int, error) {
 	if sig == nil {
 		return 0, fmt.Errorf("compiler: missing host function signature")
 	}
@@ -1625,7 +1624,7 @@ func (fc *funcCompiler) emitDirectGoCallArgsForHostSignature(expr *goast.CallExp
 		}
 	}
 	lastParam := sig.Params[len(sig.Params)-1]
-	sliceType, ok := semaTypes.Underlying(lastParam).(*semaTypes.SliceType)
+	sliceType, ok := runtime.Underlying(lastParam).(*runtime.SliceType)
 	if !ok || sliceType == nil {
 		return 0, fmt.Errorf("compiler: variadic host parameter must be a slice type")
 	}
@@ -1689,7 +1688,7 @@ func (fc *funcCompiler) emitDirectGoAddressableUpdate(target goast.Expr, value g
 	if targetType == nil {
 		return fmt.Errorf("compiler: missing type fact for expression %T", target)
 	}
-	ptrSlot, err := fc.declareSlot("_", &semaTypes.PointerType{Base: targetType})
+	ptrSlot, err := fc.declareSlot("_", &runtime.PointerType{Base: targetType})
 	if err != nil {
 		return err
 	}
@@ -1864,20 +1863,20 @@ func (fc *funcCompiler) emitDirectGoRange(stmt *goast.RangeStmt) error {
 	return nil
 }
 
-func (fc *funcCompiler) rangeSlotForDirect(expr goast.Expr, typ semaTypes.Type) (int, error) {
+func (fc *funcCompiler) rangeSlotForDirect(expr goast.Expr, typ runtime.ScriptType) (int, error) {
 	if ident, ok := expr.(*goast.Ident); ok && ident.Name != "_" {
 		return fc.declareSlot(ident.Name, typ)
 	}
 	return fc.declareSlot("_", typ)
 }
 
-func (fc *funcCompiler) emitDirectRangeInit(rangeType semaTypes.Type) (bytecode.Opcode, int, int, error) {
-	if _, ok := semaTypes.Underlying(rangeType).(*semaTypes.MapType); ok {
+func (fc *funcCompiler) emitDirectRangeInit(rangeType runtime.ScriptType) (bytecode.Opcode, int, int, error) {
+	if _, ok := runtime.Underlying(rangeType).(*runtime.MapType); ok {
 		sourceSlot, err := fc.declareSlot("_", rangeType)
 		if err != nil {
 			return 0, 0, 0, err
 		}
-		indexSlot, err := fc.declareSlot("_", semaTypes.IntType)
+		indexSlot, err := fc.declareSlot("_", runtime.BuiltinIntType)
 		if err != nil {
 			return 0, 0, 0, err
 		}
@@ -1888,7 +1887,7 @@ func (fc *funcCompiler) emitDirectRangeInit(rangeType semaTypes.Type) (bytecode.
 	if err != nil {
 		return 0, 0, 0, err
 	}
-	indexSlot, err := fc.declareSlot("_", semaTypes.IntType)
+	indexSlot, err := fc.declareSlot("_", runtime.BuiltinIntType)
 	if err != nil {
 		return 0, 0, 0, err
 	}
@@ -2091,7 +2090,7 @@ func (fc *funcCompiler) emitDirectGoIncDec(stmt *goast.IncDecStmt) error {
 		return nil
 	case *goast.IndexExpr:
 		baseType := directGoFactOrExprType(fc.parent.facts, target.X)
-		if _, ok := semaTypes.Underlying(baseType).(*semaTypes.MapType); ok {
+		if _, ok := runtime.Underlying(baseType).(*runtime.MapType); ok {
 			one := &goast.BasicLit{Kind: gotoken.INT, Value: "1"}
 			if stmt.Tok == gotoken.INC {
 				return fc.emitDirectGoMapIndexAddAssign(target, one)
@@ -2127,7 +2126,7 @@ func (fc *funcCompiler) emitDirectGoCaseBody(stmts []goast.Stmt) error {
 	return nil
 }
 
-func directGoFactOrExprType(facts *sema.Facts, expr goast.Expr) semaTypes.Type {
+func directGoFactOrExprType(facts *sema.Facts, expr goast.Expr) runtime.ScriptType {
 	if facts != nil && facts.Types != nil {
 		if typ := facts.Types[expr]; typ != nil {
 			return typ
@@ -2163,12 +2162,12 @@ func (fc *funcCompiler) directGoMethodIndex(expr *goast.SelectorExpr) (int, bool
 		return 0, false
 	}
 	switch t := baseType.(type) {
-	case *semaTypes.NamedType:
+	case *runtime.NamedType:
 		methods := fc.parent.program.MethodSets[t.Name]
 		index, ok := methods[expr.Sel.Name]
 		return index, ok
-	case *semaTypes.PointerType:
-		if named, ok := t.Base.(*semaTypes.NamedType); ok {
+	case *runtime.PointerType:
+		if named, ok := t.Base.(*runtime.NamedType); ok {
 			methods := fc.parent.program.MethodSets[named.Name]
 			index, ok := methods[expr.Sel.Name]
 			return index, ok
@@ -2179,7 +2178,7 @@ func (fc *funcCompiler) directGoMethodIndex(expr *goast.SelectorExpr) (int, bool
 
 func (fc *funcCompiler) emitDirectGoLocalAssignFastPath(targetSlot int, value goast.Expr, tok gotoken.Token) bool {
 	targetType, ok := fc.slotTypes[targetSlot]
-	if !ok || !semaTypes.Identical(targetType, semaTypes.IntType) {
+	if !ok || !runtime.Identical(targetType, runtime.BuiltinIntType) {
 		return false
 	}
 
@@ -2205,7 +2204,7 @@ func (fc *funcCompiler) emitDirectGoLocalAssignFastPath(targetSlot int, value go
 			return false
 		}
 		sourceType, ok := fc.slotTypes[sourceSlot]
-		if !ok || !semaTypes.Identical(sourceType, semaTypes.IntType) {
+		if !ok || !runtime.Identical(sourceType, runtime.BuiltinIntType) {
 			return false
 		}
 		switch tok {
@@ -2231,11 +2230,11 @@ func (fc *funcCompiler) emitDirectGoLocalAssignFastPath(targetSlot int, value go
 		if !ok {
 			return false
 		}
-		if _, ok := semaTypes.Underlying(baseType).(*semaTypes.PointerType); ok {
+		if _, ok := runtime.Underlying(baseType).(*runtime.PointerType); ok {
 			return false
 		}
 		selection := directGoSelection(fc.parent.facts, v)
-		if selection == nil || selection.Kind != sema.SelectionField || !semaTypes.Identical(selection.Type, semaTypes.IntType) {
+		if selection == nil || selection.Kind != sema.SelectionField || !runtime.Identical(selection.Type, runtime.BuiltinIntType) {
 			return false
 		}
 		if tok != gotoken.ADD_ASSIGN {
@@ -2256,8 +2255,8 @@ func (fc *funcCompiler) emitDirectGoLocalAssignFastPath(targetSlot int, value go
 		if !ok {
 			return false
 		}
-		arrayType, ok := semaTypes.Underlying(baseType).(*semaTypes.ArrayType)
-		if !ok || !semaTypes.Identical(arrayType.Elem, semaTypes.IntType) || tok != gotoken.ADD_ASSIGN {
+		arrayType, ok := runtime.Underlying(baseType).(*runtime.ArrayType)
+		if !ok || !runtime.Identical(arrayType.Elem, runtime.BuiltinIntType) || tok != gotoken.ADD_ASSIGN {
 			return false
 		}
 		indexLit, ok := v.Index.(*goast.BasicLit)
@@ -2288,11 +2287,11 @@ func (fc *funcCompiler) emitDirectGoStructFieldAddFastPath(target *goast.Selecto
 	if !ok {
 		return false
 	}
-	if _, isPtr := semaTypes.Underlying(baseType).(*semaTypes.PointerType); isPtr {
+	if _, isPtr := runtime.Underlying(baseType).(*runtime.PointerType); isPtr {
 		return false
 	}
 	selection := directGoSelection(fc.parent.facts, target)
-	if selection == nil || selection.Kind != sema.SelectionField || !semaTypes.Identical(selection.Type, semaTypes.IntType) {
+	if selection == nil || selection.Kind != sema.SelectionField || !runtime.Identical(selection.Type, runtime.BuiltinIntType) {
 		return false
 	}
 	switch v := value.(type) {
@@ -2309,7 +2308,7 @@ func (fc *funcCompiler) emitDirectGoStructFieldAddFastPath(target *goast.Selecto
 			return false
 		}
 		sourceType, ok := fc.slotTypes[sourceSlot]
-		if !ok || !semaTypes.Identical(sourceType, semaTypes.IntType) {
+		if !ok || !runtime.Identical(sourceType, runtime.BuiltinIntType) {
 			return false
 		}
 		fc.emit(bytecode.OpStructFieldAddLocal, baseSlot, selection.FieldIndex, int64(sourceSlot))
@@ -2320,7 +2319,7 @@ func (fc *funcCompiler) emitDirectGoStructFieldAddFastPath(target *goast.Selecto
 			return false
 		}
 		sourceSelection := directGoSelection(fc.parent.facts, v)
-		if sourceSelection == nil || sourceSelection.Kind != sema.SelectionField || !semaTypes.Identical(sourceSelection.Type, semaTypes.IntType) {
+		if sourceSelection == nil || sourceSelection.Kind != sema.SelectionField || !runtime.Identical(sourceSelection.Type, runtime.BuiltinIntType) {
 			return false
 		}
 		fc.emit(bytecode.OpStructFieldAddField, baseSlot, selection.FieldIndex, int64(sourceSelection.FieldIndex))
@@ -2343,11 +2342,11 @@ func (fc *funcCompiler) emitDirectGoArrayElemAddFastPath(target *goast.IndexExpr
 	if !ok {
 		return false
 	}
-	arrayType, ok := semaTypes.Underlying(baseType).(*semaTypes.ArrayType)
-	if !ok || !semaTypes.Identical(arrayType.Elem, semaTypes.IntType) {
+	arrayType, ok := runtime.Underlying(baseType).(*runtime.ArrayType)
+	if !ok || !runtime.Identical(arrayType.Elem, runtime.BuiltinIntType) {
 		return false
 	}
-	indexSlot, err := fc.declareSlot("_", semaTypes.IntType)
+	indexSlot, err := fc.declareSlot("_", runtime.BuiltinIntType)
 	if err != nil {
 		return false
 	}
@@ -2369,7 +2368,7 @@ func (fc *funcCompiler) emitDirectGoArrayElemAddFastPath(target *goast.IndexExpr
 			return false
 		}
 		sourceType, ok := fc.slotTypes[sourceSlot]
-		if !ok || !semaTypes.Identical(sourceType, semaTypes.IntType) {
+		if !ok || !runtime.Identical(sourceType, runtime.BuiltinIntType) {
 			return false
 		}
 		fc.emit(bytecode.OpArrayElemAddLocal, baseSlot, indexSlot, int64(sourceSlot))
@@ -2387,11 +2386,11 @@ func (fc *funcCompiler) emitDirectGoArrayElemAddFastPath(target *goast.IndexExpr
 		if !ok {
 			return false
 		}
-		if _, isPtr := semaTypes.Underlying(sourceBaseType).(*semaTypes.PointerType); isPtr {
+		if _, isPtr := runtime.Underlying(sourceBaseType).(*runtime.PointerType); isPtr {
 			return false
 		}
 		selection := directGoSelection(fc.parent.facts, v)
-		if selection == nil || selection.Kind != sema.SelectionField || !semaTypes.Identical(selection.Type, semaTypes.IntType) {
+		if selection == nil || selection.Kind != sema.SelectionField || !runtime.Identical(selection.Type, runtime.BuiltinIntType) {
 			return false
 		}
 		fc.emit(bytecode.OpArrayElemAddStructField, baseSlot, indexSlot, int64(sourceSlot))
@@ -2404,7 +2403,7 @@ func (fc *funcCompiler) emitDirectGoArrayElemAddFastPath(target *goast.IndexExpr
 
 func (fc *funcCompiler) emitDirectGoMapIndexAddAssign(indexExpr *goast.IndexExpr, value goast.Expr) error {
 	baseType := directGoFactOrExprType(fc.parent.facts, indexExpr.X)
-	mapType, ok := semaTypes.Underlying(baseType).(*semaTypes.MapType)
+	mapType, ok := runtime.Underlying(baseType).(*runtime.MapType)
 	if !ok || mapType == nil {
 		return fmt.Errorf("compiler: expected map index update target")
 	}
@@ -2470,11 +2469,11 @@ func (fc *funcCompiler) emitDirectGoMapIndexAddAssign(indexExpr *goast.IndexExpr
 	return nil
 }
 
-func (fc *funcCompiler) directGoSimpleMapAccess(indexExpr *goast.IndexExpr, mapType *semaTypes.MapType) (func() error, func() error, bool) {
+func (fc *funcCompiler) directGoSimpleMapAccess(indexExpr *goast.IndexExpr, mapType *runtime.MapType) (func() error, func() error, bool) {
 	if fc == nil || indexExpr == nil || mapType == nil {
 		return nil, nil, false
 	}
-	if !semaTypes.Identical(mapType.Key, semaTypes.StringType) {
+	if !runtime.Identical(mapType.Key, runtime.BuiltinStringType) {
 		return nil, nil, false
 	}
 	keyLit, ok := indexExpr.Index.(*goast.BasicLit)
@@ -2528,7 +2527,7 @@ func (fc *funcCompiler) emitDirectGoCondJumpFalse(cond goast.Expr) (int, bool, e
 			return -1, false, nil
 		}
 		typ, ok := fc.slotTypes[slot]
-		if !ok || !semaTypes.Identical(typ, semaTypes.IntType) {
+		if !ok || !runtime.Identical(typ, runtime.BuiltinIntType) {
 			return -1, false, nil
 		}
 		right, ok := bin.Y.(*goast.BasicLit)
@@ -2558,7 +2557,7 @@ func (fc *funcCompiler) emitDirectGoCondJumpFalse(cond goast.Expr) (int, bool, e
 			return -1, false, nil
 		}
 		typ, ok := fc.slotTypes[slot]
-		if !ok || !semaTypes.Identical(typ, semaTypes.IntType) {
+		if !ok || !runtime.Identical(typ, runtime.BuiltinIntType) {
 			return -1, false, nil
 		}
 		maskLit, ok := and.Y.(*goast.BasicLit)
@@ -2656,7 +2655,7 @@ func (fc *funcCompiler) emitDirectGoDecl(decl goast.Decl) error {
 	return nil
 }
 
-func (fc *funcCompiler) directGoTypeForScope(expr goast.Expr) (semaTypes.Type, error) {
+func (fc *funcCompiler) directGoTypeForScope(expr goast.Expr) (runtime.ScriptType, error) {
 	switch expr := expr.(type) {
 	case *goast.Ident:
 		if typ, err := directGoType(expr); err == nil {
@@ -2675,14 +2674,14 @@ func (fc *funcCompiler) directGoTypeForScope(expr goast.Expr) (semaTypes.Type, e
 		if err != nil {
 			return nil, err
 		}
-		return &semaTypes.PointerType{Base: base}, nil
+		return &runtime.PointerType{Base: base}, nil
 	case *goast.ArrayType:
 		elem, err := fc.directGoTypeForScope(expr.Elt)
 		if err != nil {
 			return nil, err
 		}
 		if expr.Len == nil {
-			return &semaTypes.SliceType{Elem: elem}, nil
+			return &runtime.SliceType{Elem: elem}, nil
 		}
 		lit, ok := expr.Len.(*goast.BasicLit)
 		if !ok {
@@ -2692,7 +2691,7 @@ func (fc *funcCompiler) directGoTypeForScope(expr goast.Expr) (semaTypes.Type, e
 		if err != nil {
 			return nil, fmt.Errorf("compiler: invalid array length %q: %w", lit.Value, err)
 		}
-		return &semaTypes.ArrayType{Len: n, Elem: elem}, nil
+		return &runtime.ArrayType{Len: n, Elem: elem}, nil
 	case *goast.MapType:
 		key, err := fc.directGoTypeForScope(expr.Key)
 		if err != nil {
@@ -2702,13 +2701,13 @@ func (fc *funcCompiler) directGoTypeForScope(expr goast.Expr) (semaTypes.Type, e
 		if err != nil {
 			return nil, err
 		}
-		return &semaTypes.MapType{Key: key, Value: value}, nil
+		return &runtime.MapType{Key: key, Value: value}, nil
 	default:
 		return nil, fmt.Errorf("compiler: direct go/ast type %T is not supported", expr)
 	}
 }
 
-func (fc *funcCompiler) directGoTypeForScopeOrValueSpec(spec *goast.ValueSpec) (semaTypes.Type, error) {
+func (fc *funcCompiler) directGoTypeForScopeOrValueSpec(spec *goast.ValueSpec) (runtime.ScriptType, error) {
 	if spec == nil {
 		return nil, fmt.Errorf("compiler: missing direct go/ast value spec")
 	}
@@ -2721,7 +2720,7 @@ func (fc *funcCompiler) directGoTypeForScopeOrValueSpec(spec *goast.ValueSpec) (
 	return directGoExprType(spec.Values[0])
 }
 
-func directGoValueSpecTypeFromFacts(facts *sema.Facts, spec *goast.ValueSpec, declaredTypes map[string]semaTypes.Type) (semaTypes.Type, bool) {
+func directGoValueSpecTypeFromFacts(facts *sema.Facts, spec *goast.ValueSpec, declaredTypes map[string]runtime.ScriptType) (runtime.ScriptType, bool) {
 	if spec == nil {
 		return nil, false
 	}
@@ -2748,7 +2747,7 @@ func directGoValueSpecTypeFromFacts(facts *sema.Facts, spec *goast.ValueSpec, de
 	if err == nil {
 		return typ, true
 	}
-	return semaTypes.InvalidType, true
+	return runtime.BuiltinInvalidType, true
 }
 
 func directGoConstExpr(facts *sema.Facts, expr *goast.Ident) goast.Expr {
@@ -2762,21 +2761,21 @@ func directGoConstExpr(facts *sema.Facts, expr *goast.Ident) goast.Expr {
 	return constExpr
 }
 
-func directGoExprType(expr goast.Expr) (semaTypes.Type, error) {
+func directGoExprType(expr goast.Expr) (runtime.ScriptType, error) {
 	switch expr := expr.(type) {
 	case *goast.BasicLit:
 		switch expr.Kind {
 		case gotoken.STRING:
-			return semaTypes.StringType, nil
+			return runtime.BuiltinStringType, nil
 		case gotoken.FLOAT:
-			return semaTypes.Float64Type, nil
+			return runtime.BuiltinFloat64Type, nil
 		default:
-			return semaTypes.IntType, nil
+			return runtime.BuiltinIntType, nil
 		}
 	case *goast.Ident:
 		switch expr.Name {
 		case "true", "false":
-			return semaTypes.BoolType, nil
+			return runtime.BuiltinBoolType, nil
 		default:
 			return nil, fmt.Errorf("compiler: direct go/ast cannot infer type for identifier %q", expr.Name)
 		}
@@ -2785,7 +2784,7 @@ func directGoExprType(expr goast.Expr) (semaTypes.Type, error) {
 		case gotoken.ADD, gotoken.SUB:
 			return directGoExprType(expr.X)
 		case gotoken.NOT:
-			return semaTypes.BoolType, nil
+			return runtime.BuiltinBoolType, nil
 		default:
 			return nil, fmt.Errorf("compiler: direct go/ast cannot infer type for unary operator %s", expr.Op.String())
 		}
@@ -2803,9 +2802,9 @@ func (c *compiler) compileDirectGoInit(packageVars []directGoPackageVar) error {
 		functionIndex: index,
 		function:      &c.program.Functions[index],
 		scope:         newScope(nil),
-		slotTypes:     make(map[int]semaTypes.Type),
+		slotTypes:     make(map[int]runtime.ScriptType),
 		captureSlots:  make(map[string]int),
-		captureTypes:  make(map[int]semaTypes.Type),
+		captureTypes:  make(map[int]runtime.ScriptType),
 	}
 	for _, pkgVar := range packageVars {
 		slot := c.globalIndex[pkgVar.name]
@@ -3001,7 +3000,7 @@ func (fc *funcCompiler) emitDirectGoExpr(expr goast.Expr) error {
 			if err != nil {
 				return err
 			}
-			if mapType, ok := semaTypes.Underlying(typ).(*semaTypes.MapType); ok {
+			if mapType, ok := runtime.Underlying(typ).(*runtime.MapType); ok {
 				if len(expr.Args) != 1 {
 					return fmt.Errorf("compiler: make map expects 1 argument, got %d", len(expr.Args))
 				}
@@ -3012,7 +3011,7 @@ func (fc *funcCompiler) emitDirectGoExpr(expr goast.Expr) error {
 				fc.emit(bytecode.OpMakeMap, int(kind), 0, 0)
 				return nil
 			}
-			if sliceType, ok := semaTypes.Underlying(typ).(*semaTypes.SliceType); ok {
+			if sliceType, ok := runtime.Underlying(typ).(*runtime.SliceType); ok {
 				if len(expr.Args) != 2 && len(expr.Args) != 3 {
 					return fmt.Errorf("compiler: make slice expects 2 or 3 arguments, got %d", len(expr.Args))
 				}
@@ -3051,7 +3050,7 @@ func (fc *funcCompiler) emitDirectGoExpr(expr goast.Expr) error {
 				return fmt.Errorf("compiler: append expects at least 2 arguments, got %d", len(expr.Args))
 			}
 			targetType := directGoFactOrExprType(fc.parent.facts, expr.Args[0])
-			sliceType, _ := semaTypes.Underlying(targetType).(*semaTypes.SliceType)
+			sliceType, _ := runtime.Underlying(targetType).(*runtime.SliceType)
 			if sliceType == nil {
 				return fmt.Errorf("compiler: append first argument must be slice")
 			}
@@ -3141,7 +3140,7 @@ func (fc *funcCompiler) emitDirectGoExpr(expr goast.Expr) error {
 					if err != nil {
 						return err
 					}
-					sig, ok := semaTypes.Underlying(selection.Type).(*semaTypes.FuncType)
+					sig, ok := runtime.Underlying(selection.Type).(*runtime.FuncType)
 					if !ok || sig == nil {
 						return fmt.Errorf("compiler: method selection is not a function")
 					}
@@ -3215,11 +3214,11 @@ func (fc *funcCompiler) emitDirectGoExpr(expr goast.Expr) error {
 		if selection.Kind != sema.SelectionField {
 			return fmt.Errorf("compiler: missing selection fact for direct go/ast selector")
 		}
-		if baseIdent, ok := expr.X.(*goast.Ident); ok && !selection.NeedsDeref && semaTypes.Identical(selection.Type, semaTypes.IntType) {
+		if baseIdent, ok := expr.X.(*goast.Ident); ok && !selection.NeedsDeref && runtime.Identical(selection.Type, runtime.BuiltinIntType) {
 			if baseSlot, ok := fc.lookupSlot(baseIdent.Name); ok {
 				baseType, ok := fc.slotTypes[baseSlot]
 				if ok {
-					if _, isPtr := semaTypes.Underlying(baseType).(*semaTypes.PointerType); !isPtr {
+					if _, isPtr := runtime.Underlying(baseType).(*runtime.PointerType); !isPtr {
 						fc.emit(bytecode.OpLoadStructFieldLocal, baseSlot, selection.FieldIndex, 0)
 						return nil
 					}
@@ -3239,14 +3238,14 @@ func (fc *funcCompiler) emitDirectGoExpr(expr goast.Expr) error {
 			return fmt.Errorf("compiler: missing type fact for expression %T", expr)
 		}
 		baseType := directGoFactOrExprType(fc.parent.facts, expr.X)
-		if _, ok := semaTypes.Underlying(baseType).(*semaTypes.MapType); ok {
+		if _, ok := runtime.Underlying(baseType).(*runtime.MapType); ok {
 			return fc.emitDirectGoMapGet(expr, false)
 		}
 		if baseIdent, ok := expr.X.(*goast.Ident); ok {
 			if baseSlot, ok := fc.lookupSlot(baseIdent.Name); ok {
 				baseType, ok := fc.slotTypes[baseSlot]
 				if ok {
-					if arrayType, ok := semaTypes.Underlying(baseType).(*semaTypes.ArrayType); ok && semaTypes.Identical(arrayType.Elem, semaTypes.IntType) {
+					if arrayType, ok := runtime.Underlying(baseType).(*runtime.ArrayType); ok && runtime.Identical(arrayType.Elem, runtime.BuiltinIntType) {
 						if lit, ok := expr.Index.(*goast.BasicLit); ok {
 							index, err := strconv.ParseInt(lit.Value, 10, 64)
 							if err == nil {
@@ -3303,7 +3302,7 @@ func (fc *funcCompiler) emitDirectGoExpr(expr goast.Expr) error {
 
 func (fc *funcCompiler) emitDirectGoMapGet(expr *goast.IndexExpr, commaOK bool) error {
 	baseType := directGoFactOrExprType(fc.parent.facts, expr.X)
-	mapType, ok := semaTypes.Underlying(baseType).(*semaTypes.MapType)
+	mapType, ok := runtime.Underlying(baseType).(*runtime.MapType)
 	if !ok || mapType == nil {
 		return fmt.Errorf("compiler: expected map index expression")
 	}
@@ -3326,39 +3325,39 @@ func (fc *funcCompiler) emitDirectGoMapGet(expr *goast.IndexExpr, commaOK bool) 
 	return nil
 }
 
-func (fc *funcCompiler) emitDirectGoConversion(src, dst semaTypes.Type) error {
+func (fc *funcCompiler) emitDirectGoConversion(src, dst runtime.ScriptType) error {
 	if src == nil || dst == nil {
 		return fmt.Errorf("compiler: missing type fact for conversion")
 	}
-	srcKind := semaTypes.Underlying(src).Kind()
-	dstKind := semaTypes.Underlying(dst).Kind()
+	srcKind := runtime.Underlying(src).Kind()
+	dstKind := runtime.Underlying(dst).Kind()
 	if srcKind == dstKind {
 		return nil
 	}
 	switch dstKind {
-	case semaTypes.Int:
+	case runtime.TypeKindInt:
 		fc.emit(bytecode.OpConvertInt, 0, 0, 0)
 		return nil
-	case semaTypes.Int64:
+	case runtime.TypeKindInt64:
 		fc.emit(bytecode.OpConvertInt64, 0, 0, 0)
 		return nil
-	case semaTypes.Float64:
+	case runtime.TypeKindFloat64:
 		fc.emit(bytecode.OpConvertFloat64, 0, 0, 0)
 		return nil
-	case semaTypes.String:
+	case runtime.TypeKindString:
 		fc.emit(bytecode.OpConvertString, 0, 0, 0)
 		return nil
 	default:
-		if semaTypes.Underlying(src).Kind() == semaTypes.Underlying(dst).Kind() {
+		if runtime.Underlying(src).Kind() == runtime.Underlying(dst).Kind() {
 			return nil
 		}
 		return fmt.Errorf("compiler: unsupported conversion from %s to %s", src.String(), dst.String())
 	}
 }
 
-func (fc *funcCompiler) emitDirectGoCompositeLitForType(expr *goast.CompositeLit, typ semaTypes.Type) error {
-	switch t := semaTypes.Underlying(typ).(type) {
-	case *semaTypes.StructType:
+func (fc *funcCompiler) emitDirectGoCompositeLitForType(expr *goast.CompositeLit, typ runtime.ScriptType) error {
+	switch t := runtime.Underlying(typ).(type) {
+	case *runtime.StructType:
 		keyed := false
 		for _, elt := range expr.Elts {
 			if _, ok := elt.(*goast.KeyValueExpr); ok {
@@ -3401,7 +3400,7 @@ func (fc *funcCompiler) emitDirectGoCompositeLitForType(expr *goast.CompositeLit
 				}
 			}
 			fc.emit(bytecode.OpMakeStruct, len(t.Fields), 0, 0)
-			if named, ok := typ.(*semaTypes.NamedType); ok {
+			if named, ok := typ.(*runtime.NamedType); ok {
 				fc.function.Code[len(fc.function.Code)-1].S = named.Name
 			}
 			return nil
@@ -3415,11 +3414,11 @@ func (fc *funcCompiler) emitDirectGoCompositeLitForType(expr *goast.CompositeLit
 			}
 		}
 		fc.emit(bytecode.OpMakeStruct, len(expr.Elts), 0, 0)
-		if named, ok := typ.(*semaTypes.NamedType); ok {
+		if named, ok := typ.(*runtime.NamedType); ok {
 			fc.function.Code[len(fc.function.Code)-1].S = named.Name
 		}
 		return nil
-	case *semaTypes.ArrayType:
+	case *runtime.ArrayType:
 		if len(expr.Elts) != t.Len {
 			return fmt.Errorf("compiler: composite literal has %d elements for %s", len(expr.Elts), typ.String())
 		}
@@ -3430,7 +3429,7 @@ func (fc *funcCompiler) emitDirectGoCompositeLitForType(expr *goast.CompositeLit
 		}
 		fc.emit(bytecode.OpMakeArray, len(expr.Elts), 0, 0)
 		return nil
-	case *semaTypes.SliceType:
+	case *runtime.SliceType:
 		for _, elt := range expr.Elts {
 			if err := fc.emitDirectGoExprForExpectedType(elt, t.Elem); err != nil {
 				return err
@@ -3443,7 +3442,7 @@ func (fc *funcCompiler) emitDirectGoCompositeLitForType(expr *goast.CompositeLit
 	}
 }
 
-func (fc *funcCompiler) emitDirectGoExprForExpectedType(expr goast.Expr, expected semaTypes.Type) error {
+func (fc *funcCompiler) emitDirectGoExprForExpectedType(expr goast.Expr, expected runtime.ScriptType) error {
 	if lit, ok := expr.(*goast.CompositeLit); ok && lit.Type == nil && expected != nil {
 		return fc.emitDirectGoCompositeLitForType(lit, expected)
 	}
@@ -3454,7 +3453,7 @@ func (fc *funcCompiler) emitDirectGoExprForExpectedType(expr goast.Expr, expecte
 		return nil
 	}
 	src := directGoFactOrExprType(fc.parent.facts, expr)
-	if src == nil || semaTypes.AssignableTo(src, expected) {
+	if src == nil || runtime.AssignableTo(src, expected) {
 		return nil
 	}
 	return fc.emitDirectGoConversion(src, expected)

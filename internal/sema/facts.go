@@ -4,13 +4,13 @@ import (
 	goast "go/ast"
 	gotoken "go/token"
 
-	semaTypes "goes/types"
+	"goes/runtime"
 )
 
 type Facts struct {
 	Bindings     map[any]*Symbol
 	Captures     map[any]*Symbol
-	Types        map[any]semaTypes.Type
+	Types        map[any]runtime.ScriptType
 	ConstExprs   map[any]any
 	Selections   map[any]*Selection
 	PackageScope *Scope
@@ -25,7 +25,7 @@ const (
 
 type Selection struct {
 	Kind         SelectionKind
-	Type         semaTypes.Type
+	Type         runtime.ScriptType
 	FieldIndex   int
 	NeedsDeref   bool
 	NeedsAddress bool

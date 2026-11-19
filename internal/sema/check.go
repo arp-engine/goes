@@ -6,7 +6,7 @@ import (
 	gotoken "go/token"
 	"strconv"
 
-	semaTypes "goes/types"
+	"goes/runtime"
 )
 
 func checkGoPackageSemantics(fset *gotoken.FileSet, files []*goast.File, facts *Facts) error {
@@ -33,7 +33,7 @@ func checkGoDeclSemantics(fset *gotoken.FileSet, facts *Facts, decl goast.Decl) 
 			if !ok {
 				continue
 			}
-			var declaredType semaTypes.Type
+			var declaredType runtime.ScriptType
 			if valueSpec.Type != nil {
 				typ, err := goTypeFromFacts(facts, valueSpec.Type)
 				if err != nil {
@@ -46,7 +46,7 @@ func checkGoDeclSemantics(fset *gotoken.FileSet, facts *Facts, decl goast.Decl) 
 				if err != nil {
 					return err
 				}
-				if ok && declaredType != nil && !semaTypes.AssignableTo(valueType, declaredType) && !goExprAssignableTo(value, declaredType, facts) {
+				if ok && declaredType != nil && !runtime.AssignableTo(valueType, declaredType) && !goExprAssignableTo(value, declaredType, facts) {
 					return goastError(fset, value.Pos(), "cannot initialize value of type %s as %s", valueType.String(), declaredType.String())
 				}
 				if err := checkNestedGoExprSemantics(fset, facts, value); err != nil {
@@ -69,7 +69,7 @@ func checkGoFuncDeclSemantics(fset *gotoken.FileSet, facts *Facts, decl *goast.F
 	return checkGoBlockSemantics(fset, facts, decl.Body, results)
 }
 
-func checkGoBlockSemantics(fset *gotoken.FileSet, facts *Facts, block *goast.BlockStmt, results []semaTypes.Type) error {
+func checkGoBlockSemantics(fset *gotoken.FileSet, facts *Facts, block *goast.BlockStmt, results []runtime.ScriptType) error {
 	if block == nil {
 		return nil
 	}
@@ -81,7 +81,7 @@ func checkGoBlockSemantics(fset *gotoken.FileSet, facts *Facts, block *goast.Blo
 	return nil
 }
 
-func checkGoStmtSemantics(fset *gotoken.FileSet, facts *Facts, stmt goast.Stmt, results []semaTypes.Type) error {
+func checkGoStmtSemantics(fset *gotoken.FileSet, facts *Facts, stmt goast.Stmt, results []runtime.ScriptType) error {
 	switch stmt := stmt.(type) {
 	case nil, *goast.EmptyStmt:
 		return nil
@@ -97,7 +97,7 @@ func checkGoStmtSemantics(fset *gotoken.FileSet, facts *Facts, stmt goast.Stmt, 
 		if err != nil {
 			return err
 		}
-		if ok && !semaTypes.IsBoolean(condType) {
+		if ok && !runtime.IsBoolean(condType) {
 			return goastError(fset, stmt.Cond.Pos(), "condition must be bool, got %s", condType.String())
 		}
 		if err := checkGoBlockSemantics(fset, facts, stmt.Body, results); err != nil {
@@ -250,22 +250,22 @@ func checkGoStmtSemantics(fset *gotoken.FileSet, facts *Facts, stmt goast.Stmt, 
 	}
 }
 
-func checkGoRangeSemantics(rangeType semaTypes.Type, stmt *goast.RangeStmt) error {
-	if semaTypes.IsInteger(rangeType) {
+func checkGoRangeSemantics(rangeType runtime.ScriptType, stmt *goast.RangeStmt) error {
+	if runtime.IsInteger(rangeType) {
 		if stmt.Value != nil {
 			return fmt.Errorf("sema: integer range permits at most one iteration variable")
 		}
 		return nil
 	}
-	switch semaTypes.Underlying(rangeType).(type) {
-	case *semaTypes.MapType, *semaTypes.ArrayType, *semaTypes.SliceType:
+	switch runtime.Underlying(rangeType).(type) {
+	case *runtime.MapType, *runtime.ArrayType, *runtime.SliceType:
 		return nil
 	default:
 		return fmt.Errorf("sema: cannot range over %s", rangeType.String())
 	}
 }
 
-func checkGoRangeAssignSemantics(fset *gotoken.FileSet, facts *Facts, rangeType semaTypes.Type, stmt *goast.RangeStmt) error {
+func checkGoRangeAssignSemantics(fset *gotoken.FileSet, facts *Facts, rangeType runtime.ScriptType, stmt *goast.RangeStmt) error {
 	if stmt.Tok != gotoken.ASSIGN {
 		return nil
 	}
@@ -279,7 +279,7 @@ func checkGoRangeAssignSemantics(fset *gotoken.FileSet, facts *Facts, rangeType 
 	return checkGoRangeAssignTarget(fset, facts, stmt.Value, valueType)
 }
 
-func checkGoRangeAssignTarget(fset *gotoken.FileSet, facts *Facts, target goast.Expr, sourceType semaTypes.Type) error {
+func checkGoRangeAssignTarget(fset *gotoken.FileSet, facts *Facts, target goast.Expr, sourceType runtime.ScriptType) error {
 	if target == nil {
 		return nil
 	}
@@ -290,7 +290,7 @@ func checkGoRangeAssignTarget(fset *gotoken.FileSet, facts *Facts, target goast.
 	if err != nil || !ok {
 		return err
 	}
-	if semaTypes.IsInvalid(sourceType) || semaTypes.IsInvalid(targetType) {
+	if runtime.IsInvalid(sourceType) || runtime.IsInvalid(targetType) {
 		return nil
 	}
 	if !goAssignmentCompatible(nil, sourceType, targetType, facts) {
@@ -299,17 +299,17 @@ func checkGoRangeAssignTarget(fset *gotoken.FileSet, facts *Facts, target goast.
 	return nil
 }
 
-func goRangeKeyValueTypes(rangeType semaTypes.Type) (semaTypes.Type, semaTypes.Type, error) {
-	if semaTypes.IsInteger(rangeType) {
-		return rangeType, semaTypes.InvalidType, nil
+func goRangeKeyValueTypes(rangeType runtime.ScriptType) (runtime.ScriptType, runtime.ScriptType, error) {
+	if runtime.IsInteger(rangeType) {
+		return rangeType, runtime.BuiltinInvalidType, nil
 	}
-	switch t := semaTypes.Underlying(rangeType).(type) {
-	case *semaTypes.MapType:
+	switch t := runtime.Underlying(rangeType).(type) {
+	case *runtime.MapType:
 		return t.Key, t.Value, nil
-	case *semaTypes.ArrayType:
-		return semaTypes.IntType, t.Elem, nil
-	case *semaTypes.SliceType:
-		return semaTypes.IntType, t.Elem, nil
+	case *runtime.ArrayType:
+		return runtime.BuiltinIntType, t.Elem, nil
+	case *runtime.SliceType:
+		return runtime.BuiltinIntType, t.Elem, nil
 	default:
 		return nil, nil, fmt.Errorf("sema: cannot range over %s", rangeType.String())
 	}
@@ -343,7 +343,7 @@ func checkGoAssignSemantics(fset *gotoken.FileSet, facts *Facts, stmt *goast.Ass
 		if !ok {
 			return nil
 		}
-		if semaTypes.IsInvalid(rightTypes[i]) || semaTypes.IsInvalid(leftType) {
+		if runtime.IsInvalid(rightTypes[i]) || runtime.IsInvalid(leftType) {
 			return nil
 		}
 		var rightExpr goast.Expr
@@ -374,13 +374,13 @@ func checkGoDefineSemantics(fset *gotoken.FileSet, facts *Facts, stmt *goast.Ass
 	return nil
 }
 
-func goAssignRightTypes(facts *Facts, stmt *goast.AssignStmt) ([]semaTypes.Type, bool, error) {
+func goAssignRightTypes(facts *Facts, stmt *goast.AssignStmt) ([]runtime.ScriptType, bool, error) {
 	if stmt != nil && len(stmt.Rhs) == 1 && len(stmt.Lhs) == 2 {
 		if valueType, ok, err := goMapIndexCommaOkTypes(facts, stmt.Rhs[0]); err != nil || ok {
 			return valueType, ok, err
 		}
 	}
-	rightTypes := make([]semaTypes.Type, 0, len(stmt.Rhs))
+	rightTypes := make([]runtime.ScriptType, 0, len(stmt.Rhs))
 	for _, expr := range stmt.Rhs {
 		types, ok, err := goExprResultTypes(facts, expr)
 		if err != nil {
@@ -394,7 +394,7 @@ func goAssignRightTypes(facts *Facts, stmt *goast.AssignStmt) ([]semaTypes.Type,
 	return rightTypes, true, nil
 }
 
-func goMapIndexCommaOkTypes(facts *Facts, expr goast.Expr) ([]semaTypes.Type, bool, error) {
+func goMapIndexCommaOkTypes(facts *Facts, expr goast.Expr) ([]runtime.ScriptType, bool, error) {
 	index, ok := expr.(*goast.IndexExpr)
 	if !ok {
 		return nil, false, nil
@@ -403,7 +403,7 @@ func goMapIndexCommaOkTypes(facts *Facts, expr goast.Expr) ([]semaTypes.Type, bo
 	if err != nil || !ok {
 		return nil, ok, err
 	}
-	mapType, ok := semaTypes.Underlying(baseType).(*semaTypes.MapType)
+	mapType, ok := runtime.Underlying(baseType).(*runtime.MapType)
 	if !ok || mapType == nil {
 		return nil, false, nil
 	}
@@ -415,7 +415,7 @@ func goMapIndexCommaOkTypes(facts *Facts, expr goast.Expr) ([]semaTypes.Type, bo
 		return nil, false, fmt.Errorf("sema: cannot index %s with %s", baseType.String(), indexType.String())
 	}
 	recordGoExprType(facts, index, mapType.Value)
-	return []semaTypes.Type{mapType.Value, semaTypes.BoolType}, true, nil
+	return []runtime.ScriptType{mapType.Value, runtime.BuiltinBoolType}, true, nil
 }
 
 func checkGoCompoundAssignSemantics(fset *gotoken.FileSet, facts *Facts, stmt *goast.AssignStmt) error {
@@ -441,22 +441,22 @@ func checkGoCompoundAssignSemantics(fset *gotoken.FileSet, facts *Facts, stmt *g
 	}
 	switch stmt.Tok {
 	case gotoken.ADD_ASSIGN:
-		if semaTypes.IsString(leftType) && semaTypes.IsString(rightType) {
+		if runtime.IsString(leftType) && runtime.IsString(rightType) {
 			return nil
 		}
-		if !semaTypes.IsNumeric(leftType) || !semaTypes.IsNumeric(rightType) {
+		if !runtime.IsNumeric(leftType) || !runtime.IsNumeric(rightType) {
 			return goastError(fset, stmt.Pos(), "operator + expects numeric or string operands, got %s and %s", leftType.String(), rightType.String())
 		}
 	case gotoken.SUB_ASSIGN, gotoken.MUL_ASSIGN, gotoken.QUO_ASSIGN:
-		if !semaTypes.IsNumeric(leftType) || !semaTypes.IsNumeric(rightType) {
+		if !runtime.IsNumeric(leftType) || !runtime.IsNumeric(rightType) {
 			return goastError(fset, stmt.Pos(), "arithmetic operands must be numeric, got %s and %s", leftType.String(), rightType.String())
 		}
 	case gotoken.REM_ASSIGN, gotoken.AND_ASSIGN, gotoken.OR_ASSIGN, gotoken.XOR_ASSIGN, gotoken.AND_NOT_ASSIGN:
-		if !semaTypes.IsInteger(leftType) || !semaTypes.IsInteger(rightType) {
+		if !runtime.IsInteger(leftType) || !runtime.IsInteger(rightType) {
 			return goastError(fset, stmt.Pos(), "operator requires integer operands, got %s and %s", leftType.String(), rightType.String())
 		}
 	case gotoken.SHL_ASSIGN, gotoken.SHR_ASSIGN:
-		if !semaTypes.IsInteger(leftType) || !semaTypes.IsInteger(rightType) {
+		if !runtime.IsInteger(leftType) || !runtime.IsInteger(rightType) {
 			return goastError(fset, stmt.Pos(), "shift operands must be integers, got %s and %s", leftType.String(), rightType.String())
 		}
 	default:
@@ -465,11 +465,11 @@ func checkGoCompoundAssignSemantics(fset *gotoken.FileSet, facts *Facts, stmt *g
 	return nil
 }
 
-func checkGoReturnSemantics(fset *gotoken.FileSet, facts *Facts, stmt *goast.ReturnStmt, results []semaTypes.Type) error {
+func checkGoReturnSemantics(fset *gotoken.FileSet, facts *Facts, stmt *goast.ReturnStmt, results []runtime.ScriptType) error {
 	if len(stmt.Results) == 0 {
 		return nil
 	}
-	gotTypes := make([]semaTypes.Type, 0, len(stmt.Results))
+	gotTypes := make([]runtime.ScriptType, 0, len(stmt.Results))
 	gotExprs := make([]goast.Expr, 0, len(stmt.Results))
 	for _, expr := range stmt.Results {
 		types, ok, err := goExprResultTypes(facts, expr)
@@ -492,7 +492,7 @@ func checkGoReturnSemantics(fset *gotoken.FileSet, facts *Facts, stmt *goast.Ret
 		return goastError(fset, stmt.Pos(), "return value count mismatch: got %d, want %d", len(gotTypes), len(results))
 	}
 	for i, got := range gotTypes {
-		if semaTypes.IsInvalid(got) || semaTypes.IsInvalid(results[i]) {
+		if runtime.IsInvalid(got) || runtime.IsInvalid(results[i]) {
 			return nil
 		}
 		if !goAssignmentCompatible(gotExprs[i], got, results[i], facts) {
@@ -507,11 +507,11 @@ func checkGoReturnSemantics(fset *gotoken.FileSet, facts *Facts, stmt *goast.Ret
 	return nil
 }
 
-func goExprResultTypes(facts *Facts, expr goast.Expr) ([]semaTypes.Type, bool, error) {
+func goExprResultTypes(facts *Facts, expr goast.Expr) ([]runtime.ScriptType, bool, error) {
 	if call, ok := expr.(*goast.CallExpr); ok {
 		if ident, ok := call.Fun.(*goast.Ident); ok {
-			if builtin := semaTypes.LookupBuiltin(ident.Name); builtin != nil {
-				return []semaTypes.Type{builtin}, true, nil
+			if builtin := runtime.LookupBuiltin(ident.Name); builtin != nil {
+				return []runtime.ScriptType{builtin}, true, nil
 			}
 			switch ident.Name {
 			case "make", "len", "delete", "append":
@@ -519,7 +519,7 @@ func goExprResultTypes(facts *Facts, expr goast.Expr) ([]semaTypes.Type, bool, e
 				if err != nil || !ok {
 					return nil, ok, err
 				}
-				return []semaTypes.Type{typ}, true, nil
+				return []runtime.ScriptType{typ}, true, nil
 			case "clear":
 				if _, ok, err := tryGoExprType(facts, expr); err != nil || !ok {
 					return nil, ok, err
@@ -531,8 +531,8 @@ func goExprResultTypes(facts *Facts, expr goast.Expr) ([]semaTypes.Type, bool, e
 		if err != nil || !ok {
 			return nil, ok, err
 		}
-		if fn, ok := semaTypes.Underlying(funType).(*semaTypes.FuncType); ok {
-			return append([]semaTypes.Type(nil), fn.Results...), true, nil
+		if fn, ok := runtime.Underlying(funType).(*runtime.FuncType); ok {
+			return append([]runtime.ScriptType(nil), fn.Results...), true, nil
 		}
 		return nil, false, nil
 	}
@@ -540,7 +540,7 @@ func goExprResultTypes(facts *Facts, expr goast.Expr) ([]semaTypes.Type, bool, e
 	if err != nil || !ok {
 		return nil, ok, err
 	}
-	return []semaTypes.Type{typ}, true, nil
+	return []runtime.ScriptType{typ}, true, nil
 }
 
 func checkGoExprStmtSemantics(fset *gotoken.FileSet, facts *Facts, stmt *goast.ExprStmt) error {
@@ -549,7 +549,7 @@ func checkGoExprStmtSemantics(fset *gotoken.FileSet, facts *Facts, stmt *goast.E
 		return goastError(fset, stmt.X.Pos(), "expression statement must be a call")
 	}
 	if ident, ok := call.Fun.(*goast.Ident); ok {
-		if semaTypes.LookupBuiltin(ident.Name) != nil {
+		if runtime.LookupBuiltin(ident.Name) != nil {
 			return goastError(fset, stmt.X.Pos(), "expression statement must be a call")
 		}
 		if facts != nil && facts.Bindings != nil {
@@ -578,7 +578,7 @@ func checkGoIncDecSemantics(fset *gotoken.FileSet, facts *Facts, stmt *goast.Inc
 	if !ok {
 		return nil
 	}
-	if !semaTypes.IsNumeric(typ) {
+	if !runtime.IsNumeric(typ) {
 		return goastError(fset, stmt.X.Pos(), "operator %q requires numeric operand, got %s", stmt.Tok.String(), typ.String())
 	}
 	return checkNestedGoExprSemantics(fset, facts, stmt.X)
@@ -615,18 +615,18 @@ func checkNestedGoExprSemantics(fset *gotoken.FileSet, facts *Facts, expr goast.
 	return err
 }
 
-func goResultsFromFuncDecl(facts *Facts, decl *goast.FuncDecl) ([]semaTypes.Type, error) {
+func goResultsFromFuncDecl(facts *Facts, decl *goast.FuncDecl) ([]runtime.ScriptType, error) {
 	if decl == nil || decl.Type == nil || decl.Type.Results == nil {
 		return nil, nil
 	}
 	return goResultsFromFuncType(facts, decl.Type)
 }
 
-func goResultsFromFuncType(facts *Facts, funcType *goast.FuncType) ([]semaTypes.Type, error) {
+func goResultsFromFuncType(facts *Facts, funcType *goast.FuncType) ([]runtime.ScriptType, error) {
 	if funcType == nil || funcType.Results == nil {
 		return nil, nil
 	}
-	results := make([]semaTypes.Type, 0)
+	results := make([]runtime.ScriptType, 0)
 	for _, field := range funcType.Results.List {
 		fieldType, err := goTypeFromFacts(facts, field.Type)
 		if err != nil {
@@ -643,10 +643,10 @@ func goResultsFromFuncType(facts *Facts, funcType *goast.FuncType) ([]semaTypes.
 	return results, nil
 }
 
-func goTypeFromFacts(facts *Facts, expr goast.Expr) (semaTypes.Type, error) {
+func goTypeFromFacts(facts *Facts, expr goast.Expr) (runtime.ScriptType, error) {
 	switch expr := expr.(type) {
 	case *goast.Ident:
-		if builtin := semaTypes.LookupBuiltin(expr.Name); builtin != nil {
+		if builtin := runtime.LookupBuiltin(expr.Name); builtin != nil {
 			return builtin, nil
 		}
 		sym := facts.Bindings[expr]
@@ -660,19 +660,19 @@ func goTypeFromFacts(facts *Facts, expr goast.Expr) (semaTypes.Type, error) {
 			return nil, err
 		}
 		if expr.Len == nil {
-			return &semaTypes.SliceType{Elem: elem}, nil
+			return &runtime.SliceType{Elem: elem}, nil
 		}
 		length, err := goConstArrayLenFromFacts(facts, expr.Len)
 		if err != nil {
 			return nil, err
 		}
-		return &semaTypes.ArrayType{Len: length, Elem: elem}, nil
+		return &runtime.ArrayType{Len: length, Elem: elem}, nil
 	case *goast.StarExpr:
 		base, err := goTypeFromFacts(facts, expr.X)
 		if err != nil {
 			return nil, err
 		}
-		return &semaTypes.PointerType{Base: base}, nil
+		return &runtime.PointerType{Base: base}, nil
 	case *goast.MapType:
 		key, err := goTypeFromFacts(facts, expr.Key)
 		if err != nil {
@@ -682,18 +682,18 @@ func goTypeFromFacts(facts *Facts, expr goast.Expr) (semaTypes.Type, error) {
 		if err != nil {
 			return nil, err
 		}
-		return &semaTypes.MapType{Key: key, Value: value}, nil
+		return &runtime.MapType{Key: key, Value: value}, nil
 	case *goast.Ellipsis:
 		elem, err := goTypeFromFacts(facts, expr.Elt)
 		if err != nil {
 			return nil, err
 		}
-		return &semaTypes.SliceType{Elem: elem}, nil
+		return &runtime.SliceType{Elem: elem}, nil
 	case *goast.StructType:
-		fields := make([]semaTypes.Type, 0)
+		fields := make([]runtime.ScriptType, 0)
 		names := make([]string, 0)
 		if expr.Fields == nil {
-			return &semaTypes.StructType{}, nil
+			return &runtime.StructType{}, nil
 		}
 		for _, field := range expr.Fields.List {
 			fieldType, err := goTypeFromFacts(facts, field.Type)
@@ -710,9 +710,9 @@ func goTypeFromFacts(facts *Facts, expr goast.Expr) (semaTypes.Type, error) {
 				names = append(names, name.Name)
 			}
 		}
-		return &semaTypes.StructType{FieldNames: names, Fields: fields}, nil
+		return &runtime.StructType{FieldNames: names, Fields: fields}, nil
 	case *goast.FuncType:
-		params := make([]semaTypes.Type, 0)
+		params := make([]runtime.ScriptType, 0)
 		variadic := false
 		if expr.Params != nil {
 			for i, field := range expr.Params.List {
@@ -732,7 +732,7 @@ func goTypeFromFacts(facts *Facts, expr goast.Expr) (semaTypes.Type, error) {
 				}
 			}
 		}
-		results := make([]semaTypes.Type, 0)
+		results := make([]runtime.ScriptType, 0)
 		if expr.Results != nil {
 			for _, field := range expr.Results.List {
 				fieldType, err := goTypeFromFacts(facts, field.Type)
@@ -748,7 +748,7 @@ func goTypeFromFacts(facts *Facts, expr goast.Expr) (semaTypes.Type, error) {
 				}
 			}
 		}
-		return &semaTypes.FuncType{Params: params, Results: results, Variadic: variadic}, nil
+		return &runtime.FuncType{Params: params, Results: results, Variadic: variadic}, nil
 	default:
 		return nil, fmt.Errorf("sema: unsupported go/ast type expression %T in direct checker", expr)
 	}
@@ -823,7 +823,7 @@ func goConstArrayLenFromFacts(facts *Facts, expr goast.Expr) (int, error) {
 	}
 }
 
-func tryGoPkgSelectorType(facts *Facts, expr *goast.SelectorExpr, pkgSym *Symbol) (semaTypes.Type, bool, error) {
+func tryGoPkgSelectorType(facts *Facts, expr *goast.SelectorExpr, pkgSym *Symbol) (runtime.ScriptType, bool, error) {
 	if facts == nil || facts.PackageScope == nil || pkgSym == nil {
 		return nil, false, nil
 	}
@@ -844,7 +844,7 @@ func tryGoPkgSelectorType(facts *Facts, expr *goast.SelectorExpr, pkgSym *Symbol
 	return nil, false, nil
 }
 
-func tryGoExprType(facts *Facts, expr goast.Expr) (result semaTypes.Type, ok bool, err error) {
+func tryGoExprType(facts *Facts, expr goast.Expr) (result runtime.ScriptType, ok bool, err error) {
 	orig := expr
 	defer func() {
 		if err == nil && ok && result != nil {
@@ -854,15 +854,15 @@ func tryGoExprType(facts *Facts, expr goast.Expr) (result semaTypes.Type, ok boo
 
 	switch expr := expr.(type) {
 	case nil:
-		return semaTypes.InvalidType, true, nil
+		return runtime.BuiltinInvalidType, true, nil
 	case *goast.Ident:
 		switch expr.Name {
 		case "true", "false":
 			recordGoConstExpr(facts, expr, expr)
-			return semaTypes.BoolType, true, nil
+			return runtime.BuiltinBoolType, true, nil
 		case "nil":
 			recordGoConstExpr(facts, expr, expr)
-			return semaTypes.NilType, true, nil
+			return runtime.BuiltinNilType, true, nil
 		}
 		sym := facts.Bindings[expr]
 		if sym == nil {
@@ -876,11 +876,11 @@ func tryGoExprType(facts *Facts, expr goast.Expr) (result semaTypes.Type, ok boo
 		recordGoConstExpr(facts, expr, expr)
 		switch expr.Kind {
 		case gotoken.STRING:
-			return semaTypes.StringType, true, nil
+			return runtime.BuiltinStringType, true, nil
 		case gotoken.FLOAT:
-			return semaTypes.Float64Type, true, nil
+			return runtime.BuiltinFloat64Type, true, nil
 		default:
-			return semaTypes.IntType, true, nil
+			return runtime.BuiltinIntType, true, nil
 		}
 	case *goast.ParenExpr:
 		return tryGoExprType(facts, expr.X)
@@ -891,17 +891,17 @@ func tryGoExprType(facts *Facts, expr goast.Expr) (result semaTypes.Type, ok boo
 		}
 		switch expr.Op {
 		case gotoken.NOT:
-			return semaTypes.BoolType, true, nil
+			return runtime.BuiltinBoolType, true, nil
 		case gotoken.AND:
 			if _, ok := expr.X.(*goast.CompositeLit); ok {
-				return &semaTypes.PointerType{Base: xType}, true, nil
+				return &runtime.PointerType{Base: xType}, true, nil
 			}
 			if !isGoAddressableExpr(facts, expr.X) {
 				return nil, false, fmt.Errorf("sema: expression %T is not addressable", expr.X)
 			}
-			return &semaTypes.PointerType{Base: xType}, true, nil
+			return &runtime.PointerType{Base: xType}, true, nil
 		case gotoken.MUL:
-			ptr, ok := semaTypes.Underlying(xType).(*semaTypes.PointerType)
+			ptr, ok := runtime.Underlying(xType).(*runtime.PointerType)
 			if !ok || ptr == nil {
 				return nil, false, nil
 			}
@@ -914,7 +914,7 @@ func tryGoExprType(facts *Facts, expr goast.Expr) (result semaTypes.Type, ok boo
 		if err != nil || !ok {
 			return nil, ok, err
 		}
-		ptr, ok := semaTypes.Underlying(xType).(*semaTypes.PointerType)
+		ptr, ok := runtime.Underlying(xType).(*runtime.PointerType)
 		if !ok || ptr == nil {
 			return nil, false, nil
 		}
@@ -933,26 +933,26 @@ func tryGoExprType(facts *Facts, expr goast.Expr) (result semaTypes.Type, ok boo
 		}
 		switch expr.Op {
 		case gotoken.LAND, gotoken.LOR, gotoken.LSS, gotoken.LEQ, gotoken.GTR, gotoken.GEQ:
-			return semaTypes.BoolType, true, nil
+			return runtime.BuiltinBoolType, true, nil
 		case gotoken.EQL, gotoken.NEQ:
 			if !comparableGoOperands(left, right, expr.X, expr.Y) {
 				return nil, false, fmt.Errorf("sema: cannot compare %s with %s", left.String(), right.String())
 			}
-			return semaTypes.BoolType, true, nil
+			return runtime.BuiltinBoolType, true, nil
 		case gotoken.ADD:
-			if semaTypes.IsString(left) && semaTypes.IsString(right) {
-				return semaTypes.StringType, true, nil
+			if runtime.IsString(left) && runtime.IsString(right) {
+				return runtime.BuiltinStringType, true, nil
 			}
 			return commonGoNumericType(left, right), true, nil
 		case gotoken.SUB, gotoken.MUL, gotoken.QUO:
 			return commonGoNumericType(left, right), true, nil
 		case gotoken.REM, gotoken.AND, gotoken.OR, gotoken.XOR, gotoken.AND_NOT:
-			if !semaTypes.IsInteger(left) || !semaTypes.IsInteger(right) {
+			if !runtime.IsInteger(left) || !runtime.IsInteger(right) {
 				return nil, false, fmt.Errorf("sema: operator requires integer operands, got %s and %s", left.String(), right.String())
 			}
 			return left, true, nil
 		case gotoken.SHL, gotoken.SHR:
-			if !semaTypes.IsInteger(left) || !semaTypes.IsInteger(right) {
+			if !runtime.IsInteger(left) || !runtime.IsInteger(right) {
 				return nil, false, fmt.Errorf("sema: shift operands must be integers, got %s and %s", left.String(), right.String())
 			}
 			return left, true, nil
@@ -984,11 +984,11 @@ func tryGoExprType(facts *Facts, expr goast.Expr) (result semaTypes.Type, ok boo
 			}
 			return nil, false, nil
 		}
-		if methodType, ok := semaTypes.LookupMethod(baseType, expr.Sel.Name); ok {
+		if methodType, ok := runtime.LookupMethod(baseType, expr.Sel.Name); ok {
 			recordGoSelection(facts, expr, &Selection{Kind: SelectionMethod, Type: methodType})
 			return methodType, true, nil
 		}
-		if methodType, ok := semaTypes.LookupMethod(&semaTypes.PointerType{Base: baseType}, expr.Sel.Name); ok {
+		if methodType, ok := runtime.LookupMethod(&runtime.PointerType{Base: baseType}, expr.Sel.Name); ok {
 			if !isGoAddressableExpr(facts, expr.X) {
 				return nil, false, fmt.Errorf("sema: cannot call pointer receiver method on non-addressable value")
 			}
@@ -1020,18 +1020,18 @@ func tryGoExprType(facts *Facts, expr goast.Expr) (result semaTypes.Type, ok boo
 		if err != nil || !ok {
 			return nil, ok, err
 		}
-		switch t := semaTypes.Underlying(baseType).(type) {
-		case *semaTypes.ArrayType:
-			if !semaTypes.IsInteger(indexType) {
+		switch t := runtime.Underlying(baseType).(type) {
+		case *runtime.ArrayType:
+			if !runtime.IsInteger(indexType) {
 				return nil, false, fmt.Errorf("sema: index must be integer, got %s", indexType.String())
 			}
 			return t.Elem, true, nil
-		case *semaTypes.SliceType:
-			if !semaTypes.IsInteger(indexType) {
+		case *runtime.SliceType:
+			if !runtime.IsInteger(indexType) {
 				return nil, false, fmt.Errorf("sema: index must be integer, got %s", indexType.String())
 			}
 			return t.Elem, true, nil
-		case *semaTypes.MapType:
+		case *runtime.MapType:
 			if !goAssignmentCompatible(expr.Index, indexType, t.Key, facts) {
 				return nil, false, fmt.Errorf("sema: cannot index %s with %s", baseType.String(), indexType.String())
 			}
@@ -1049,7 +1049,7 @@ func tryGoExprType(facts *Facts, expr goast.Expr) (result semaTypes.Type, ok boo
 			if err != nil || !ok {
 				return nil, ok, err
 			}
-			if !semaTypes.IsInteger(lowType) {
+			if !runtime.IsInteger(lowType) {
 				return nil, false, fmt.Errorf("sema: slice low bound must be integer, got %s", lowType.String())
 			}
 		}
@@ -1058,7 +1058,7 @@ func tryGoExprType(facts *Facts, expr goast.Expr) (result semaTypes.Type, ok boo
 			if err != nil || !ok {
 				return nil, ok, err
 			}
-			if !semaTypes.IsInteger(highType) {
+			if !runtime.IsInteger(highType) {
 				return nil, false, fmt.Errorf("sema: slice high bound must be integer, got %s", highType.String())
 			}
 		}
@@ -1067,20 +1067,20 @@ func tryGoExprType(facts *Facts, expr goast.Expr) (result semaTypes.Type, ok boo
 			if err != nil || !ok {
 				return nil, ok, err
 			}
-			if !semaTypes.IsInteger(maxType) {
+			if !runtime.IsInteger(maxType) {
 				return nil, false, fmt.Errorf("sema: slice max bound must be integer, got %s", maxType.String())
 			}
 		}
-		switch t := semaTypes.Underlying(baseType).(type) {
-		case *semaTypes.ArrayType:
-			return &semaTypes.SliceType{Elem: t.Elem}, true, nil
-		case *semaTypes.SliceType:
-			return &semaTypes.SliceType{Elem: t.Elem}, true, nil
-		case *semaTypes.BasicType:
-			if semaTypes.Identical(t, semaTypes.StringType) && expr.Max == nil {
-				return semaTypes.StringType, true, nil
+		switch t := runtime.Underlying(baseType).(type) {
+		case *runtime.ArrayType:
+			return &runtime.SliceType{Elem: t.Elem}, true, nil
+		case *runtime.SliceType:
+			return &runtime.SliceType{Elem: t.Elem}, true, nil
+		case *runtime.BasicType:
+			if runtime.Identical(t, runtime.BuiltinStringType) && expr.Max == nil {
+				return runtime.BuiltinStringType, true, nil
 			}
-			if semaTypes.Identical(t, semaTypes.StringType) {
+			if runtime.Identical(t, runtime.BuiltinStringType) {
 				return nil, false, fmt.Errorf("sema: cannot use full slice expression on string")
 			}
 			return nil, false, fmt.Errorf("sema: cannot slice %s", baseType.String())
@@ -1095,7 +1095,7 @@ func tryGoExprType(facts *Facts, expr goast.Expr) (result semaTypes.Type, ok boo
 		return typ, true, nil
 	case *goast.CallExpr:
 		if ident, ok := expr.Fun.(*goast.Ident); ok {
-			if builtin := semaTypes.LookupBuiltin(ident.Name); builtin != nil {
+			if builtin := runtime.LookupBuiltin(ident.Name); builtin != nil {
 				if len(expr.Args) != 1 {
 					return nil, false, fmt.Errorf("sema: %s expects 1 argument, got %d", builtin.String(), len(expr.Args))
 				}
@@ -1117,12 +1117,12 @@ func tryGoExprType(facts *Facts, expr goast.Expr) (result semaTypes.Type, ok boo
 				if err != nil {
 					return nil, false, err
 				}
-				switch semaTypes.Underlying(typ).(type) {
-				case *semaTypes.MapType:
+				switch runtime.Underlying(typ).(type) {
+				case *runtime.MapType:
 					if len(expr.Args) != 1 {
 						return nil, false, fmt.Errorf("sema: make map expects 1 argument, got %d", len(expr.Args))
 					}
-				case *semaTypes.SliceType:
+				case *runtime.SliceType:
 					if len(expr.Args) != 2 && len(expr.Args) != 3 {
 						return nil, false, fmt.Errorf("sema: make slice expects 2 or 3 arguments, got %d", len(expr.Args))
 					}
@@ -1131,7 +1131,7 @@ func tryGoExprType(facts *Facts, expr goast.Expr) (result semaTypes.Type, ok boo
 						if err != nil || !ok {
 							return nil, ok, err
 						}
-						if !semaTypes.IsInteger(argType) {
+						if !runtime.IsInteger(argType) {
 							return nil, false, fmt.Errorf("sema: make slice length and capacity must be integer, got %s", argType.String())
 						}
 					}
@@ -1147,12 +1147,12 @@ func tryGoExprType(facts *Facts, expr goast.Expr) (result semaTypes.Type, ok boo
 				if err != nil || !ok {
 					return nil, ok, err
 				}
-				switch semaTypes.Underlying(argType).(type) {
-				case *semaTypes.ArrayType, *semaTypes.SliceType, *semaTypes.MapType:
-					return semaTypes.IntType, true, nil
+				switch runtime.Underlying(argType).(type) {
+				case *runtime.ArrayType, *runtime.SliceType, *runtime.MapType:
+					return runtime.BuiltinIntType, true, nil
 				}
-				if semaTypes.IsString(argType) {
-					return semaTypes.IntType, true, nil
+				if runtime.IsString(argType) {
+					return runtime.BuiltinIntType, true, nil
 				}
 				return nil, false, fmt.Errorf("sema: len does not support %s", argType.String())
 			case "delete":
@@ -1163,7 +1163,7 @@ func tryGoExprType(facts *Facts, expr goast.Expr) (result semaTypes.Type, ok boo
 				if err != nil || !ok {
 					return nil, ok, err
 				}
-				m, ok := semaTypes.Underlying(mapType).(*semaTypes.MapType)
+				m, ok := runtime.Underlying(mapType).(*runtime.MapType)
 				if !ok || m == nil {
 					return nil, false, fmt.Errorf("sema: delete expects a map, got %s", mapType.String())
 				}
@@ -1174,7 +1174,7 @@ func tryGoExprType(facts *Facts, expr goast.Expr) (result semaTypes.Type, ok boo
 				if !goAssignmentCompatible(expr.Args[1], keyType, m.Key, facts) {
 					return nil, false, fmt.Errorf("sema: cannot use %s as %s", keyType.String(), m.Key.String())
 				}
-				return semaTypes.IntType, true, nil
+				return runtime.BuiltinIntType, true, nil
 			case "clear":
 				if len(expr.Args) != 1 {
 					return nil, false, fmt.Errorf("sema: clear expects 1 argument, got %d", len(expr.Args))
@@ -1183,9 +1183,9 @@ func tryGoExprType(facts *Facts, expr goast.Expr) (result semaTypes.Type, ok boo
 				if err != nil || !ok {
 					return nil, ok, err
 				}
-				switch semaTypes.Underlying(argType).(type) {
-				case *semaTypes.MapType, *semaTypes.SliceType:
-					return semaTypes.IntType, true, nil
+				switch runtime.Underlying(argType).(type) {
+				case *runtime.MapType, *runtime.SliceType:
+					return runtime.BuiltinIntType, true, nil
 				default:
 					return nil, false, fmt.Errorf("sema: clear expects map or slice, got %s", argType.String())
 				}
@@ -1215,7 +1215,7 @@ func tryGoExprType(facts *Facts, expr goast.Expr) (result semaTypes.Type, ok boo
 		if !ok {
 			return nil, false, nil
 		}
-		if fn, ok := semaTypes.Underlying(funType).(*semaTypes.FuncType); ok && len(fn.Results) == 1 {
+		if fn, ok := runtime.Underlying(funType).(*runtime.FuncType); ok && len(fn.Results) == 1 {
 			if fn.Variadic {
 				fixedCount := len(fn.Params) - 1
 				if expr.Ellipsis.IsValid() {
@@ -1234,12 +1234,12 @@ func tryGoExprType(facts *Facts, expr goast.Expr) (result semaTypes.Type, ok boo
 						return nil, false, fmt.Errorf("sema: multiple values in single-value context")
 					}
 					argType := argTypes[0]
-					if !semaTypes.AssignableTo(argType, fn.Params[i]) && !goExprAssignableTo(expr.Args[i], fn.Params[i], facts) {
+					if !runtime.AssignableTo(argType, fn.Params[i]) && !goExprAssignableTo(expr.Args[i], fn.Params[i], facts) {
 						return nil, false, fmt.Errorf("sema: cannot pass %s as %s", argType.String(), fn.Params[i].String())
 					}
 				}
 				lastParam := fn.Params[len(fn.Params)-1]
-				sliceType, _ := semaTypes.Underlying(lastParam).(*semaTypes.SliceType)
+				sliceType, _ := runtime.Underlying(lastParam).(*runtime.SliceType)
 				if sliceType == nil {
 					return nil, false, fmt.Errorf("sema: variadic parameter must be a slice type")
 				}
@@ -1252,7 +1252,7 @@ func tryGoExprType(facts *Facts, expr goast.Expr) (result semaTypes.Type, ok boo
 						return nil, false, fmt.Errorf("sema: multiple values in single-value context")
 					}
 					argType := argTypes[0]
-					if !semaTypes.AssignableTo(argType, lastParam) && !goExprAssignableTo(expr.Args[len(expr.Args)-1], lastParam, facts) {
+					if !runtime.AssignableTo(argType, lastParam) && !goExprAssignableTo(expr.Args[len(expr.Args)-1], lastParam, facts) {
 						return nil, false, fmt.Errorf("sema: cannot pass %s as %s", argType.String(), lastParam.String())
 					}
 				} else {
@@ -1265,7 +1265,7 @@ func tryGoExprType(facts *Facts, expr goast.Expr) (result semaTypes.Type, ok boo
 							return nil, false, fmt.Errorf("sema: multiple values in single-value context")
 						}
 						argType := argTypes[0]
-						if !semaTypes.AssignableTo(argType, sliceType.Elem) && !goExprAssignableTo(expr.Args[i], sliceType.Elem, facts) {
+						if !runtime.AssignableTo(argType, sliceType.Elem) && !goExprAssignableTo(expr.Args[i], sliceType.Elem, facts) {
 							return nil, false, fmt.Errorf("sema: cannot pass %s as %s", argType.String(), sliceType.Elem.String())
 						}
 					}
@@ -1283,7 +1283,7 @@ func tryGoExprType(facts *Facts, expr goast.Expr) (result semaTypes.Type, ok boo
 						return nil, false, fmt.Errorf("sema: multiple values in single-value context")
 					}
 					argType := argTypes[0]
-					if !semaTypes.AssignableTo(argType, fn.Params[i]) && !goExprAssignableTo(arg, fn.Params[i], facts) {
+					if !runtime.AssignableTo(argType, fn.Params[i]) && !goExprAssignableTo(arg, fn.Params[i], facts) {
 						return nil, false, fmt.Errorf("sema: cannot pass %s as %s", argType.String(), fn.Params[i].String())
 					}
 				}
@@ -1296,7 +1296,7 @@ func tryGoExprType(facts *Facts, expr goast.Expr) (result semaTypes.Type, ok boo
 	}
 }
 
-func recordGoExprType(facts *Facts, expr goast.Expr, typ semaTypes.Type) {
+func recordGoExprType(facts *Facts, expr goast.Expr, typ runtime.ScriptType) {
 	if facts == nil || expr == nil || typ == nil {
 		return
 	}
@@ -1320,7 +1320,7 @@ func recordGoSelection(facts *Facts, expr *goast.SelectorExpr, selection *Select
 	facts.Selections[expr] = selection
 }
 
-func checkGoAppendCallType(facts *Facts, call *goast.CallExpr) (semaTypes.Type, bool, error) {
+func checkGoAppendCallType(facts *Facts, call *goast.CallExpr) (runtime.ScriptType, bool, error) {
 	if len(call.Args) < 2 {
 		return nil, false, fmt.Errorf("sema: append expects at least 2 arguments, got %d", len(call.Args))
 	}
@@ -1328,7 +1328,7 @@ func checkGoAppendCallType(facts *Facts, call *goast.CallExpr) (semaTypes.Type, 
 	if err != nil || !ok {
 		return nil, ok, err
 	}
-	sliceType, ok := semaTypes.Underlying(targetType).(*semaTypes.SliceType)
+	sliceType, ok := runtime.Underlying(targetType).(*runtime.SliceType)
 	if !ok || sliceType == nil {
 		return nil, false, fmt.Errorf("sema: append first argument must be slice, got %s", targetType.String())
 	}
@@ -1340,7 +1340,7 @@ func checkGoAppendCallType(facts *Facts, call *goast.CallExpr) (semaTypes.Type, 
 		if err != nil || !ok {
 			return nil, ok, err
 		}
-		if !semaTypes.AssignableTo(argType, targetType) && !goExprAssignableTo(call.Args[1], targetType, facts) {
+		if !runtime.AssignableTo(argType, targetType) && !goExprAssignableTo(call.Args[1], targetType, facts) {
 			return nil, false, fmt.Errorf("sema: cannot append %s as %s", argType.String(), targetType.String())
 		}
 		return targetType, true, nil
@@ -1350,31 +1350,31 @@ func checkGoAppendCallType(facts *Facts, call *goast.CallExpr) (semaTypes.Type, 
 		if err != nil || !ok {
 			return nil, ok, err
 		}
-		if !semaTypes.AssignableTo(argType, sliceType.Elem) && !goExprAssignableTo(arg, sliceType.Elem, facts) {
+		if !runtime.AssignableTo(argType, sliceType.Elem) && !goExprAssignableTo(arg, sliceType.Elem, facts) {
 			return nil, false, fmt.Errorf("sema: cannot append %s as %s", argType.String(), sliceType.Elem.String())
 		}
 	}
 	return targetType, true, nil
 }
 
-func commonGoNumericType(a, b semaTypes.Type) semaTypes.Type {
-	if semaTypes.Underlying(a).Kind() == semaTypes.Float64 || semaTypes.Underlying(b).Kind() == semaTypes.Float64 {
-		return semaTypes.Float64Type
+func commonGoNumericType(a, b runtime.ScriptType) runtime.ScriptType {
+	if runtime.Underlying(a).Kind() == runtime.TypeKindFloat64 || runtime.Underlying(b).Kind() == runtime.TypeKindFloat64 {
+		return runtime.BuiltinFloat64Type
 	}
-	if semaTypes.Underlying(a).Kind() == semaTypes.Int64 || semaTypes.Underlying(b).Kind() == semaTypes.Int64 {
-		return semaTypes.Int64Type
+	if runtime.Underlying(a).Kind() == runtime.TypeKindInt64 || runtime.Underlying(b).Kind() == runtime.TypeKindInt64 {
+		return runtime.BuiltinInt64Type
 	}
-	return semaTypes.IntType
+	return runtime.BuiltinIntType
 }
 
-func comparableGoOperands(left, right semaTypes.Type, leftExpr, rightExpr goast.Expr) bool {
-	if semaTypes.IsComparable(left) && semaTypes.IsComparable(right) {
+func comparableGoOperands(left, right runtime.ScriptType, leftExpr, rightExpr goast.Expr) bool {
+	if runtime.IsComparable(left) && runtime.IsComparable(right) {
 		return true
 	}
-	if isGoNilExpr(leftExpr) && semaTypes.IsNilable(right) {
+	if isGoNilExpr(leftExpr) && runtime.IsNilable(right) {
 		return true
 	}
-	if isGoNilExpr(rightExpr) && semaTypes.IsNilable(left) {
+	if isGoNilExpr(rightExpr) && runtime.IsNilable(left) {
 		return true
 	}
 	return false
@@ -1404,37 +1404,37 @@ func isGoAddressableExpr(facts *Facts, expr goast.Expr) bool {
 	}
 }
 
-func goExprAssignableTo(expr goast.Expr, dst semaTypes.Type, facts *Facts) bool {
+func goExprAssignableTo(expr goast.Expr, dst runtime.ScriptType, facts *Facts) bool {
 	switch expr := expr.(type) {
 	case *goast.BasicLit:
 		switch expr.Kind {
 		case gotoken.STRING:
-			return semaTypes.IsString(dst)
+			return runtime.IsString(dst)
 		case gotoken.FLOAT:
-			return semaTypes.Identical(dst, semaTypes.Float64Type) || semaTypes.IsNumeric(dst)
+			return runtime.Identical(dst, runtime.BuiltinFloat64Type) || runtime.IsNumeric(dst)
 		default:
-			return semaTypes.IsNumeric(dst)
+			return runtime.IsNumeric(dst)
 		}
 	case *goast.Ident:
 		switch expr.Name {
 		case "true", "false":
-			return semaTypes.IsBoolean(dst)
+			return runtime.IsBoolean(dst)
 		case "nil":
-			return semaTypes.IsNilable(dst)
+			return runtime.IsNilable(dst)
 		}
 	case *goast.UnaryExpr, *goast.BinaryExpr:
-		if semaTypes.IsNumeric(dst) {
+		if runtime.IsNumeric(dst) {
 			_, err := goConstArrayLenFromFacts(facts, expr)
 			return err == nil
 		}
 	case *goast.CallExpr:
 		if ident, ok := expr.Fun.(*goast.Ident); ok {
-			if builtin := semaTypes.LookupBuiltin(ident.Name); builtin != nil {
-				return semaTypes.AssignableTo(builtin, dst)
+			if builtin := runtime.LookupBuiltin(ident.Name); builtin != nil {
+				return runtime.AssignableTo(builtin, dst)
 			}
 			if facts != nil && facts.Bindings != nil {
 				if sym := facts.Bindings[ident]; sym != nil && sym.Kind == SymType {
-					return semaTypes.AssignableTo(sym.Type, dst)
+					return runtime.AssignableTo(sym.Type, dst)
 				}
 			}
 		}
@@ -1442,19 +1442,19 @@ func goExprAssignableTo(expr goast.Expr, dst semaTypes.Type, facts *Facts) bool 
 	return false
 }
 
-func goAssignmentCompatible(expr goast.Expr, src, dst semaTypes.Type, facts *Facts) bool {
-	return semaTypes.AssignableTo(src, dst) || goExprAssignableTo(expr, dst, facts)
+func goAssignmentCompatible(expr goast.Expr, src, dst runtime.ScriptType, facts *Facts) bool {
+	return runtime.AssignableTo(src, dst) || goExprAssignableTo(expr, dst, facts)
 }
 
-func goSwitchCaseCompatible(expr goast.Expr, caseType, tagType semaTypes.Type, facts *Facts) bool {
-	return semaTypes.AssignableTo(caseType, tagType) ||
-		semaTypes.AssignableTo(tagType, caseType) ||
+func goSwitchCaseCompatible(expr goast.Expr, caseType, tagType runtime.ScriptType, facts *Facts) bool {
+	return runtime.AssignableTo(caseType, tagType) ||
+		runtime.AssignableTo(tagType, caseType) ||
 		goExprAssignableTo(expr, tagType, facts)
 }
 
-func validateGoCompositeLit(lit *goast.CompositeLit, litType semaTypes.Type, facts *Facts) error {
-	switch t := semaTypes.Underlying(litType).(type) {
-	case *semaTypes.SliceType:
+func validateGoCompositeLit(lit *goast.CompositeLit, litType runtime.ScriptType, facts *Facts) error {
+	switch t := runtime.Underlying(litType).(type) {
+	case *runtime.SliceType:
 		for _, elt := range lit.Elts {
 			if _, ok := elt.(*goast.KeyValueExpr); ok {
 				return fmt.Errorf("sema: keyed slice literals are not supported")
@@ -1474,11 +1474,11 @@ func validateGoCompositeLit(lit *goast.CompositeLit, litType semaTypes.Type, fac
 			if !ok {
 				continue
 			}
-			if !semaTypes.AssignableTo(eltType, t.Elem) && !goExprAssignableTo(elt, t.Elem, facts) {
+			if !runtime.AssignableTo(eltType, t.Elem) && !goExprAssignableTo(elt, t.Elem, facts) {
 				return fmt.Errorf("sema: composite literal element %d cannot use %s as %s", i, eltType.String(), t.Elem.String())
 			}
 		}
-	case *semaTypes.ArrayType:
+	case *runtime.ArrayType:
 		for _, elt := range lit.Elts {
 			if _, ok := elt.(*goast.KeyValueExpr); ok {
 				return fmt.Errorf("sema: keyed array literals are not supported")
@@ -1501,11 +1501,11 @@ func validateGoCompositeLit(lit *goast.CompositeLit, litType semaTypes.Type, fac
 			if !ok {
 				continue
 			}
-			if !semaTypes.AssignableTo(eltType, t.Elem) && !goExprAssignableTo(elt, t.Elem, facts) {
+			if !runtime.AssignableTo(eltType, t.Elem) && !goExprAssignableTo(elt, t.Elem, facts) {
 				return fmt.Errorf("sema: composite literal element %d cannot use %s as %s", i, eltType.String(), t.Elem.String())
 			}
 		}
-	case *semaTypes.StructType:
+	case *runtime.StructType:
 		hasKeyed := false
 		hasPositional := false
 		for _, elt := range lit.Elts {
@@ -1546,7 +1546,7 @@ func validateGoCompositeLit(lit *goast.CompositeLit, litType semaTypes.Type, fac
 				if err != nil {
 					return err
 				}
-				if ok && !semaTypes.AssignableTo(valueType, t.Fields[fieldIndex]) && !goExprAssignableTo(kv.Value, t.Fields[fieldIndex], facts) {
+				if ok && !runtime.AssignableTo(valueType, t.Fields[fieldIndex]) && !goExprAssignableTo(kv.Value, t.Fields[fieldIndex], facts) {
 					return fmt.Errorf("sema: struct literal field %s cannot use %s as %s", key.Name, valueType.String(), t.Fields[fieldIndex].String())
 				}
 				seen[key.Name] = struct{}{}
@@ -1566,7 +1566,7 @@ func validateGoCompositeLit(lit *goast.CompositeLit, litType semaTypes.Type, fac
 				if err != nil {
 					return err
 				}
-				if ok && !semaTypes.AssignableTo(eltType, t.Fields[i]) && !goExprAssignableTo(elt, t.Fields[i], facts) {
+				if ok && !runtime.AssignableTo(eltType, t.Fields[i]) && !goExprAssignableTo(elt, t.Fields[i], facts) {
 					return fmt.Errorf("sema: composite literal element %d cannot use %s as %s", i, eltType.String(), t.Fields[i].String())
 				}
 			}

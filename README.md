@@ -72,23 +72,27 @@ fmt.Println(result.Int()) // 5
 
 ### 4. Hook 风格调用
 
+在编译前用 `HostRegistry` 注册 Go 结构体。注册时会自动提取类型名和字段信息，脚本可以直接使用该类型，不需要再声明一份。
+
 ```go
 type State struct{ Counter int }
 
-module := eval.MustCompileHookModule(`package main
-type State struct { Counter int }
+host := runtime.NewHostRegistry()
+host.MustRegisterType(State{})
+
+module := eval.MustCompileHookModuleWithHost(`package main
 func OnEvent(state State, value int) State {
     state.Counter += value
     return state
 }
 func main() int { return 0 }
-`, nil)
+`, host)
 
 state, _ := eval.InvokeHook(module, "OnEvent", State{Counter: 1}, 5, nil)
 fmt.Println(state.(State).Counter) // 6
 ```
 
-`InvokeHook` 把宿主的状态和可选上下文作为参数传入脚本，并将结果转换回宿主的状态类型。找不到指定 hook 时返回原状态。
+`InvokeHook` 把宿主的状态和可选上下文传入脚本，并将结果转换回宿主的状态类型；它不会自动注册参数的类型。注册的宿主类型必须是命名结构体，字段须为受支持的基础标量并已导出。找不到指定 hook 时返回原状态。
 
 ### 5. 宿主函数调用
 

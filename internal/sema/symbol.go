@@ -1,6 +1,6 @@
 package sema
 
-import sematypes "goes/types"
+import "goes/runtime"
 
 type SymbolKind int
 
@@ -18,5 +18,5 @@ type Symbol struct {
 	PkgPath  string
 	Exported bool
 	Kind     SymbolKind
-	Type     sematypes.Type
+	Type     runtime.ScriptType
 }

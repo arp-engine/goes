@@ -6,7 +6,6 @@ import (
 	"goes/internal/bytecode"
 	"goes/internal/sema"
 	"goes/runtime"
-	semaTypes "goes/types"
 )
 
 func CompileChecked(checked *sema.Checked) (*bytecode.Program, error) {
@@ -14,10 +13,10 @@ func CompileChecked(checked *sema.Checked) (*bytecode.Program, error) {
 }
 
 type CompileOptions struct {
-	HostFunctions    map[string]semaTypes.HostSignature
-	HostRegistry     *runtime.HostRegistry
-	ImportedModules  []*ImportedModule
-	RequireMain      bool
+	HostFunctions   map[string]runtime.TypedHostSignature
+	HostRegistry    *runtime.HostRegistry
+	ImportedModules []*ImportedModule
+	RequireMain     bool
 }
 
 type ImportedModule struct {

@@ -17,7 +17,6 @@ import (
 	"goes/internal/sema"
 	"goes/internal/vm"
 	"goes/runtime"
-	semaTypes "goes/types"
 )
 
 func RunProgram(dir string) (runtime.Value, error) {
@@ -170,11 +169,11 @@ func CompileSourceWithHostFuncsInto(src string, registry *runtime.HostRegistry, 
 	return program, nil
 }
 
-func compileSourceWithOptions(src string, host map[string]semaTypes.HostSignature, registry *runtime.HostRegistry) (*bytecode.Program, error) {
+func compileSourceWithOptions(src string, host map[string]runtime.TypedHostSignature, registry *runtime.HostRegistry) (*bytecode.Program, error) {
 	return compileSourceFileWithOptions("main.go", src, host, registry)
 }
 
-func compileSourceFileWithOptions(path string, src string, host map[string]semaTypes.HostSignature, registry *runtime.HostRegistry) (*bytecode.Program, error) {
+func compileSourceFileWithOptions(path string, src string, host map[string]runtime.TypedHostSignature, registry *runtime.HostRegistry) (*bytecode.Program, error) {
 	checked, err := checkSource(path, src, sema.CheckOptions{HostFunctions: host, HostRegistry: registry})
 	if err != nil {
 		return nil, err
@@ -271,24 +270,24 @@ func checkSourceFiles(files []loadedFile, opts sema.CheckOptions) (*sema.Checked
 	return checked, nil
 }
 
-func hostSignaturesToTypes(host map[string]HostSignature) (map[string]semaTypes.HostSignature, error) {
+func hostSignaturesToTypes(host map[string]HostSignature) (map[string]runtime.TypedHostSignature, error) {
 	if len(host) == 0 {
 		return nil, nil
 	}
-	result := make(map[string]semaTypes.HostSignature, len(host))
+	result := make(map[string]runtime.TypedHostSignature, len(host))
 	for name, sig := range host {
-		params := make([]semaTypes.Type, len(sig.ParamKinds))
+		params := make([]runtime.ScriptType, len(sig.ParamKinds))
 		for i, kind := range sig.ParamKinds {
 			typ, err := typeForRuntimeKind(kind)
 			if err != nil {
 				return nil, fmt.Errorf("testutil: host function %q param %d: %w", name, i, err)
 			}
 			if sig.Variadic && i == len(sig.ParamKinds)-1 {
-				typ = &semaTypes.SliceType{Elem: typ}
+				typ = &runtime.SliceType{Elem: typ}
 			}
 			params[i] = typ
 		}
-		results := make([]semaTypes.Type, len(sig.ResultKinds))
+		results := make([]runtime.ScriptType, len(sig.ResultKinds))
 		for i, kind := range sig.ResultKinds {
 			resultType, err := typeForRuntimeKind(kind)
 			if err != nil {
@@ -296,12 +295,12 @@ func hostSignaturesToTypes(host map[string]HostSignature) (map[string]semaTypes.
 			}
 			results[i] = resultType
 		}
-		result[name] = semaTypes.HostSignature{Params: params, Results: results, Variadic: sig.Variadic}
+		result[name] = runtime.TypedHostSignature{Params: params, Results: results, Variadic: sig.Variadic}
 	}
 	return result, nil
 }
 
-func runtimeHostSignaturesToTypes(host map[string]runtime.HostSignature) (map[string]semaTypes.HostSignature, error) {
+func runtimeHostSignaturesToTypes(host map[string]runtime.HostSignature) (map[string]runtime.TypedHostSignature, error) {
 	if len(host) == 0 {
 		return nil, nil
 	}
@@ -331,18 +330,18 @@ func hostFuncsToSignatures(host map[string]any) (map[string]HostSignature, error
 	return result, nil
 }
 
-func typeForRuntimeKind(kind runtime.Kind) (semaTypes.Type, error) {
+func typeForRuntimeKind(kind runtime.Kind) (runtime.ScriptType, error) {
 	switch kind {
 	case runtime.Bool:
-		return semaTypes.BoolType, nil
+		return runtime.BuiltinBoolType, nil
 	case runtime.Int:
-		return semaTypes.IntType, nil
+		return runtime.BuiltinIntType, nil
 	case runtime.Int64:
-		return semaTypes.Int64Type, nil
+		return runtime.BuiltinInt64Type, nil
 	case runtime.Float64:
-		return semaTypes.Float64Type, nil
+		return runtime.BuiltinFloat64Type, nil
 	case runtime.String:
-		return semaTypes.StringType, nil
+		return runtime.BuiltinStringType, nil
 	default:
 		return nil, fmt.Errorf("unsupported host kind %d", kind)
 	}

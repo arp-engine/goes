@@ -1,52 +1,52 @@
-package types
+package runtime
 
 import (
 	"strconv"
 	"strings"
 )
 
-type Kind int
+type TypeKind int
 
 const (
-	Invalid Kind = iota
-	Nil
-	Bool
-	Int
-	Int64
-	Float64
-	String
-	Array
-	Slice
-	Map
-	Struct
-	Pointer
-	Func
-	Named
+	TypeKindInvalid TypeKind = iota
+	TypeKindNil
+	TypeKindBool
+	TypeKindInt
+	TypeKindInt64
+	TypeKindFloat64
+	TypeKindString
+	TypeKindArray
+	TypeKindSlice
+	TypeKindMap
+	TypeKindStruct
+	TypeKindPointer
+	TypeKindFunc
+	TypeKindNamed
 )
 
-type Type interface {
-	Kind() Kind
+type ScriptType interface {
+	Kind() TypeKind
 	String() string
 }
 
 type Method struct {
 	Name        string
-	Type        Type
+	Type        ScriptType
 	PointerRecv bool
 }
 
-type HostSignature struct {
-	Params   []Type
-	Results  []Type
+type TypedHostSignature struct {
+	Params   []ScriptType
+	Results  []ScriptType
 	Variadic bool
 }
 
 type BasicType struct {
-	kind Kind
+	kind TypeKind
 	name string
 }
 
-func (t *BasicType) Kind() Kind {
+func (t *BasicType) Kind() TypeKind {
 	return t.kind
 }
 
@@ -56,11 +56,11 @@ func (t *BasicType) String() string {
 
 type ArrayType struct {
 	Len  int
-	Elem Type
+	Elem ScriptType
 }
 
-func (*ArrayType) Kind() Kind {
-	return Array
+func (*ArrayType) Kind() TypeKind {
+	return TypeKindArray
 }
 
 func (t *ArrayType) String() string {
@@ -71,11 +71,11 @@ func (t *ArrayType) String() string {
 }
 
 type SliceType struct {
-	Elem Type
+	Elem ScriptType
 }
 
-func (*SliceType) Kind() Kind {
-	return Slice
+func (*SliceType) Kind() TypeKind {
+	return TypeKindSlice
 }
 
 func (t *SliceType) String() string {
@@ -86,12 +86,12 @@ func (t *SliceType) String() string {
 }
 
 type MapType struct {
-	Key   Type
-	Value Type
+	Key   ScriptType
+	Value ScriptType
 }
 
-func (*MapType) Kind() Kind {
-	return Map
+func (*MapType) Kind() TypeKind {
+	return TypeKindMap
 }
 
 func (t *MapType) String() string {
@@ -103,11 +103,11 @@ func (t *MapType) String() string {
 
 type StructType struct {
 	FieldNames []string
-	Fields     []Type
+	Fields     []ScriptType
 }
 
-func (*StructType) Kind() Kind {
-	return Struct
+func (*StructType) Kind() TypeKind {
+	return TypeKindStruct
 }
 
 func (t *StructType) String() string {
@@ -130,11 +130,11 @@ func (t *StructType) String() string {
 }
 
 type PointerType struct {
-	Base Type
+	Base ScriptType
 }
 
-func (*PointerType) Kind() Kind {
-	return Pointer
+func (*PointerType) Kind() TypeKind {
+	return TypeKindPointer
 }
 
 func (t *PointerType) String() string {
@@ -142,13 +142,13 @@ func (t *PointerType) String() string {
 }
 
 type FuncType struct {
-	Params   []Type
-	Results  []Type
+	Params   []ScriptType
+	Results  []ScriptType
 	Variadic bool
 }
 
-func (*FuncType) Kind() Kind {
-	return Func
+func (*FuncType) Kind() TypeKind {
+	return TypeKindFunc
 }
 
 func (t *FuncType) String() string {
@@ -166,7 +166,7 @@ func (t *FuncType) String() string {
 	return "func(" + params + ") (" + results + ")"
 }
 
-func formatParamList(params []Type, variadic bool) string {
+func formatParamList(params []ScriptType, variadic bool) string {
 	parts := make([]string, 0, len(params))
 	for i, item := range params {
 		if variadic && i == len(params)-1 {
@@ -183,12 +183,12 @@ func formatParamList(params []Type, variadic bool) string {
 type NamedType struct {
 	Name       string
 	PkgPath    string
-	Underlying Type
+	Underlying ScriptType
 	Methods    []Method
 }
 
-func (*NamedType) Kind() Kind {
-	return Named
+func (*NamedType) Kind() TypeKind {
+	return TypeKindNamed
 }
 
 func (t *NamedType) String() string {
@@ -201,14 +201,14 @@ func (t *NamedType) String() string {
 	return t.PkgPath + "." + t.Name
 }
 
-func stringify(t Type) string {
+func stringify(t ScriptType) string {
 	if t == nil {
 		return "invalid"
 	}
 	return t.String()
 }
 
-func stringifyList(items []Type) string {
+func stringifyList(items []ScriptType) string {
 	parts := make([]string, 0, len(items))
 	for _, item := range items {
 		parts = append(parts, stringify(item))
@@ -216,7 +216,7 @@ func stringifyList(items []Type) string {
 	return strings.Join(parts, ", ")
 }
 
-func stringifyMethodType(t Type) string {
+func stringifyMethodType(t ScriptType) string {
 	if t == nil {
 		return " invalid"
 	}
@@ -234,14 +234,14 @@ func stringifyMethodType(t Type) string {
 	return " " + t.String()
 }
 
-func Underlying(t Type) Type {
-	seen := make(map[Type]struct{})
+func Underlying(t ScriptType) ScriptType {
+	seen := make(map[ScriptType]struct{})
 	for {
 		if t == nil {
-			return InvalidType
+			return BuiltinInvalidType
 		}
 		if _, ok := seen[t]; ok {
-			return InvalidType
+			return BuiltinInvalidType
 		}
 		seen[t] = struct{}{}
 		named, ok := t.(*NamedType)
@@ -252,66 +252,66 @@ func Underlying(t Type) Type {
 	}
 }
 
-func IsInvalid(t Type) bool {
+func IsInvalid(t ScriptType) bool {
 	if t == nil {
 		return true
 	}
-	return Underlying(t).Kind() == Invalid
+	return Underlying(t).Kind() == TypeKindInvalid
 }
 
-func IsBoolean(t Type) bool {
+func IsBoolean(t ScriptType) bool {
 	if IsInvalid(t) {
 		return false
 	}
-	return Underlying(t).Kind() == Bool
+	return Underlying(t).Kind() == TypeKindBool
 }
 
-func IsUntypedNil(t Type) bool {
+func IsUntypedNil(t ScriptType) bool {
 	if IsInvalid(t) {
 		return false
 	}
-	return Underlying(t).Kind() == Nil
+	return Underlying(t).Kind() == TypeKindNil
 }
 
-func IsInteger(t Type) bool {
+func IsInteger(t ScriptType) bool {
 	if IsInvalid(t) {
 		return false
 	}
 	switch Underlying(t).Kind() {
-	case Int, Int64:
+	case TypeKindInt, TypeKindInt64:
 		return true
 	default:
 		return false
 	}
 }
 
-func IsNumeric(t Type) bool {
+func IsNumeric(t ScriptType) bool {
 	if IsInvalid(t) {
 		return false
 	}
 	switch Underlying(t).Kind() {
-	case Int, Int64, Float64:
+	case TypeKindInt, TypeKindInt64, TypeKindFloat64:
 		return true
 	default:
 		return false
 	}
 }
 
-func IsString(t Type) bool {
+func IsString(t ScriptType) bool {
 	if IsInvalid(t) {
 		return false
 	}
-	return Underlying(t).Kind() == String
+	return Underlying(t).Kind() == TypeKindString
 }
 
-func IsComparable(t Type) bool {
+func IsComparable(t ScriptType) bool {
 	if IsInvalid(t) {
 		return false
 	}
 	switch u := Underlying(t).(type) {
 	case *BasicType:
 		switch u.Kind() {
-		case Bool, Int, Int64, Float64, String:
+		case TypeKindBool, TypeKindInt, TypeKindInt64, TypeKindFloat64, TypeKindString:
 			return true
 		default:
 			return false
@@ -332,23 +332,23 @@ func IsComparable(t Type) bool {
 	}
 }
 
-func IsNilable(t Type) bool {
+func IsNilable(t ScriptType) bool {
 	if IsInvalid(t) {
 		return false
 	}
 	switch Underlying(t).Kind() {
-	case Pointer, Slice, Map, Func:
+	case TypeKindPointer, TypeKindSlice, TypeKindMap, TypeKindFunc:
 		return true
 	default:
 		return false
 	}
 }
 
-func IsOrdered(t Type) bool {
+func IsOrdered(t ScriptType) bool {
 	return IsNumeric(t) || IsString(t)
 }
 
-func AssignableTo(src, dst Type) bool {
+func AssignableTo(src, dst ScriptType) bool {
 	if IsInvalid(src) || IsInvalid(dst) {
 		return false
 	}
@@ -358,7 +358,7 @@ func AssignableTo(src, dst Type) bool {
 	return Identical(src, dst)
 }
 
-func Identical(a, b Type) bool {
+func Identical(a, b ScriptType) bool {
 	if a == nil || b == nil {
 		return a == b
 	}
@@ -427,7 +427,7 @@ func Identical(a, b Type) bool {
 	}
 }
 
-func LookupMethod(t Type, name string) (Type, bool) {
+func LookupMethod(t ScriptType, name string) (ScriptType, bool) {
 	switch t := t.(type) {
 	case *NamedType:
 		for _, method := range t.Methods {
